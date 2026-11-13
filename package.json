@@ -1,0 +1,55 @@
+{
+  "name": "dsh-plugin-dashboard",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH 插件管理台：所有插件一屏看完，一个开关直接开关，更新完自动热替换不用重启。/ Plugin dashboard for DSH: every plugin in one list with a power switch, an auto/manual flag that scopes the one-click bulk actions, and hot-swapped updates that need no restart.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/LZM-P/dsh-plugin-dashboard" },
+  "homepage": "https://github.com/LZM-P/dsh-plugin-dashboard#readme",
+  "bugs": "https://github.com/LZM-P/dsh-plugin-dashboard/issues",
+  "engines": { "node": ">=20" },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dashboard",
+    "plugin-manager",
+    "hot-reload",
+    "upgrade",
+    "uninstall"
+  ],
+  "publishConfig": { "access": "public" },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "LICENSE", "README.md", "test/self-check.mjs"],
+  "scripts": {
+    "check": "node test/self-check.mjs"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    },
+    "engines": {
+      "dsh": ">=0.2.1-rc.2 <0.4.0-0"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.2": "compatible",
+        "0.2.1-rc.5": "compatible",
+        "0.2.2-rc.1": "compatible",
+        "0.2.2-rc.2": "compatible"
+      }
+    }
+  }
+}
