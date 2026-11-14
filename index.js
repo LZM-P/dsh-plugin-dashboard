@@ -3180,12 +3180,17 @@ async function guardedPnpm(ctx, facts, script, args) {
   const unguarded = release !== null && release.gated === false
   if (outcome.code !== 0) {
     for (const [file, text] of backup) writeFileSync(file, text, 'utf8')
-    return {
-      ok: false,
-      rolledBack: true,
-      output: outcome.output.slice(-1500),
-      message: '安装失败，package.json 与 pnpm-lock.yaml 已回滚',
-    }
+    // 失败分支也要标：用户看到"回滚了"时要能分清这次到底有没有等会话空闲，
+    // 否则靠它判断"能不能安全地立刻重试"就少了一条信息。
+    return markUnguarded(
+      {
+        ok: false,
+        rolledBack: true,
+        output: outcome.output.slice(-1500),
+        message: '安装失败，package.json 与 pnpm-lock.yaml 已回滚',
+      },
+      unguarded,
+    )
   }
   cache.clear()
   // The same swap the batch updater performs, so an extra install also goes live
@@ -3787,13 +3792,16 @@ async function handle(ctx, req, res) {
     }
     // 写操作额外要求「你确实是从这个面板来的」。
     //
-    // 前面两道闸（Host + Origin）只证明请求没被别的站点冒名，但如果一个请求
-    // 压根不带 Origin，那道闸就是放行的 —— `curl -X POST` 正好属于这类。
-    // 这样任何在本机跑着的脚本都能卸载插件、装任意 npm 包，而它连浏览器都不用开。
+    // 前面两道闸（Host + Origin）只证明请求没被别的站点冒名，但对一个完全不带
+    // Origin 的请求是放行的 —— `curl -X POST` 正好属于这类。这道门补上的是
+    // 「声明意图」：挡住别处页面顺手打过来的盲发 POST、以及被 XSS 后的自动请求。
+    //
+    // 它**不是鉴权**。本机任何拿到这个端口的脚本，加一行请求头就能过；要真防住
+    // 同机脚本，得引入 token/随机口令，目前没做。README 的「安全模型」章节说的
+    // 是同一件事，两处不要各说各的。
     //
     // 判据：浏览器发的同源请求一定带 Origin 或 Sec-Fetch-Site；两者都没有的
-    // 客户端必须显式声明意图 —— 带上 `x-dsh-plugin-rack: 1`，用来区分「我知道
-    // 我在调这个接口」和「某个页面顺手打了个 POST」。
+    // 客户端必须显式带 `x-dsh-plugin-rack: 1`。
     const secFetchSite = String(req.headers['sec-fetch-site'] ?? '').toLowerCase()
     const explicit = String(req.headers['x-dsh-plugin-rack'] ?? '') === '1'
     const fromPage = origin !== undefined && origin !== null && String(origin) !== ''

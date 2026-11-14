@@ -44,8 +44,7 @@
   ],
   "scripts": {
     "check": "node test/self-check.mjs && node test/behaviour.mjs",
-    "test": "node test/self-check.mjs && node test/behaviour.mjs && node test/download.mjs && node test/pnpm-command.mjs",
-    "test": "node test/self-check.mjs && node test/job-background.mjs && node test/download.mjs && node test/pnpm-command.mjs"
+    "test": "node test/self-check.mjs && node test/behaviour.mjs && node test/job-background.mjs && node test/download.mjs && node test/pnpm-command.mjs"
   },
   "dsh": {
     "manifestVersion": 1,

@@ -108,14 +108,71 @@ console.log('idle gate reporting')
 console.log('connection reset is not reported as failure')
 {
   const client = readFileSync(join(root, 'client.js'), 'utf8')
-  check(
-    'the optimistic state is captured as the expectation',
-    client.includes('expected = next'),
-  )
-  check('the healed state is compared before toasting', client.includes('sameEnabledMap(expected, healed)'))
-  check('a settled change stays silent', /if \(settled\) \{/.test(client))
-  check('a lost connection downgrades to a warning', client.includes("t('connLost')"))
-  check('sameEnabledMap ignores rows that vanished mid-reload', client.includes('if (want === undefined) continue'))
+
+  // 真跑这两个纯函数，不再 grep 源码。上一轮这 5 项全是 includes()，
+  // 所以「load() 返回 undefined → sameEnabledMap 里读 undefined.rows 炸掉」
+  // 这个 P0 在 33 项全绿的情况下活了下来。
+  function loadClientFn(name) {
+    const start = client.indexOf('function ' + name + '(')
+    if (start === -1) throw new Error('function ' + name + ' not found in client.js')
+    let depth = 0
+    let index = client.indexOf('{', start)
+    for (; index < client.length; index += 1) {
+      const ch = client[index]
+      if (ch === '{') depth += 1
+      else if (ch === '}') {
+        depth -= 1
+        if (depth === 0) break
+      }
+    }
+    return client.slice(start, index + 1).replace(/^function\s+\w+/, 'function')
+  }
+
+  const sameEnabledMap = new Function(
+    'return (' + loadClientFn('sameEnabledMap') + ')',
+  )()
+  const failureOutcome = new Function(
+    'sameEnabledMap',
+    'return (' + loadClientFn('failureOutcome') + ')',
+  )(sameEnabledMap)
+
+  const snap = (pairs) => ({ rows: pairs.map(([entryId, enabled]) => ({ entryId, enabled })) })
+
+  check('identical snapshots agree', sameEnabledMap(snap([['a', true]]), snap([['a', true]])) === true)
+  check('a changed row is detected', sameEnabledMap(snap([['a', true]]), snap([['a', false]])) === false)
+  check('rows added by the reload are ignored', sameEnabledMap(snap([['a', true]]), snap([['a', true], ['b', false]])) === true)
+  check('a vanished row is ignored', sameEnabledMap(snap([['a', true], ['b', false]]), snap([['a', true]])) === true)
+
+  // 这正是 P0：load() 曾返回 undefined，而判空只写了 !== null。
+  check('undefined healed snapshot does not throw', (() => {
+    try {
+      return sameEnabledMap(snap([['a', true]]), undefined) === false
+    } catch {
+      return false
+    }
+  })())
+  check('null healed snapshot does not throw', (() => {
+    try {
+      return sameEnabledMap(snap([['a', true]]), null) === false
+    } catch {
+      return false
+    }
+  })())
+
+  // failureOutcome 是 catch 里那段分支的纯形式。
+  check('settled change stays silent', failureOutcome('unreachable', snap([['a', true]]), snap([['a', true]])).kind === null)
+  check('lost connection downgrades to a warning', failureOutcome('unreachable', snap([['a', true]]), snap([['a', false]])).kind === 'warn')
+  check('the warning names connLost', failureOutcome('timeout', null, null).reason === 'connLost')
+  check('a real error stays an error', failureOutcome('boom', null, null).kind === 'err')
+  check('no expectation means no silence', failureOutcome('unreachable', null, snap([['a', true]])).kind === 'warn')
+  // 旧 bug 的完整形状：healed 是 undefined 时代码不该崩，也不该误判成"已生效"。
+  check('an undefined healed snapshot never claims success', (() => {
+    try {
+      return failureOutcome('unreachable', snap([['a', true]]), undefined).kind === 'warn'
+    } catch {
+      return false
+    }
+  })())
 }
 
 console.log('write gate')

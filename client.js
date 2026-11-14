@@ -407,13 +407,32 @@ window.__ModuleLoader__.load({
     const DEFAULT_TIMEOUT_MS = 120000;
 
     /**
+     * 一次失败的写操作该显示什么。
+     *
+     * 单独抽出来是为了能被真正测到：它原来是三段 if 嵌在 run() 的 catch 里，
+     * 只能靠 grep 源码判断"这行还在不在"，而 bug（load() 返回 undefined 时
+     * 走到 sameEnabledMap 里炸掉）恰恰是 grep 查不出来的。
+     *
+     * 返回 { kind: null } 表示"什么都不弹"——操作其实生效了。
+     */
+    function failureOutcome(message, expected, healed) {
+      if (expected !== null && expected !== undefined && sameEnabledMap(expected, healed)) {
+        return { kind: null };
+      }
+      if (message === 'unreachable' || message === 'timeout') return { kind: 'warn', reason: 'connLost' };
+      return { kind: 'err', text: message };
+    }
+
+    /**
      * 两份列表的「哪一行是开着的」是否一致。
      *
      * 只比 enabled，不比别的字段：重载之后 fiber id、phase、详情缓存都可能变，
      * 但「用户想关掉的那几个确实关掉了」才是判断这次操作成没成的依据。
      */
     function sameEnabledMap(left, right) {
-      if (left === null || right === null) return false;
+      // 两个都要先用真值判空：`!== null` 拦不住 undefined，而 load() 在失败
+      // 分支返回 null、在旧版本里返回 undefined，两种都会到这里来。
+      if (!left || !right) return false;
       if (!Array.isArray(left.rows) || !Array.isArray(right.rows)) return false;
       const flat = new Map();
       for (const row of left.rows) flat.set(row.entryId, row.enabled === true);
@@ -880,8 +899,13 @@ window.__ModuleLoader__.load({
             setError(null);
             // 上面那份列表变了，之前缓存的详情就可能全是旧的。
             setDetails({});
+            // 返回新快照：调用方要拿它和「操作成功应有的样子」比对，判断一次
+            // 失败是不是假失败。返回 undefined 会让那个判断在拿 null 判空之后
+            // 直接读到 undefined.rows。
+            return next;
           } catch (failure) {
             setError(failure instanceof Error ? failure.message : String(failure));
+            return null;
           }
         }, []);
 
@@ -911,14 +935,13 @@ window.__ModuleLoader__.load({
             setToast(null);
             // 记下「操作成功的话，列表应该长成什么样」。catch 里拿它判断这次
             // 失败是不是假失败：宿主重载配置会重置连接，但改动已经生效了。
+            //
+            // 用当前这次渲染里的 data 直接算，不靠 setData 的 updater 被调用的
+            // 时机——updater 是 React 之后才跑的，在它里面赋值等于赌调度顺序。
             let expected = null;
             if (optimistic) {
-              setData((prev) => {
-                if (prev === null) return prev;
-                const next = optimistic(prev);
-                expected = next;
-                return next;
-              });
+              if (data !== null) expected = optimistic(data);
+              setData((prev) => (prev === null ? prev : optimistic(prev)));
             }
             try {
               const next = await call();
@@ -949,14 +972,13 @@ window.__ModuleLoader__.load({
               // 预测的一致，就别弹红错——用户实测过「明明成功了却报 unreachable」。
               const message = failure instanceof Error ? failure.message : String(failure);
               const healed = await load();
-              const settled = expected !== null && healed !== null && sameEnabledMap(expected, healed);
-              if (settled) {
-                // 状态已经对上了：这不是错误，静默收尾。
-              } else if (message === 'unreachable' || message === 'timeout') {
-                setToast({ kind: 'warn', text: label + ': ' + t('connLost') });
-              } else {
-                setToast({ kind: 'err', text: label + ': ' + message });
+              const verdict = failureOutcome(message, expected, healed);
+              if (verdict.kind === 'warn') {
+                setToast({ kind: 'warn', text: label + ': ' + t(verdict.reason) });
+              } else if (verdict.kind === 'err') {
+                setToast({ kind: 'err', text: label + ': ' + verdict.text });
               }
+              // verdict.kind === null：状态已经对上了，静默收尾。
               return null;
             } finally {
               if (key === undefined) setBusy(false);
@@ -968,7 +990,9 @@ window.__ModuleLoader__.load({
                 });
             }
           },
-          [load],
+          // data 进了依赖：run 现在要读当前快照来算乐观预期，依赖数组不带上
+          // 它会一直闭包到第一次渲染时那份（通常是 null），导致判断永远跳过。
+          [load, data],
         );
 
         const togglePower = (row) =>
