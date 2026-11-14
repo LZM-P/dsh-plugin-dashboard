@@ -1,0 +1,25 @@
+fix: search by patchId, write gate for headless clients, honest idle-gate reporting
+
+Four follow-ups from the review.
+
+- Search now matches patchId and description, so a row whose moduleName is a
+  file:// path (cc-safety-net) is findable by package name, and a plugin
+  remembered by its Chinese label is findable by that.
+- A POST that carries no browser provenance is now refused unless the caller
+  sends x-dsh-plugin-rack: 1. The Host/Origin gates only prove a request was
+  not spoofed by another site; a request with no Origin at all passes them,
+  which is exactly what curl -X POST looks like -- so any local script could
+  uninstall plugins or install arbitrary npm packages without a browser. The
+  panel sends the header itself, and README documents it for scripted use.
+- holdAgents no longer degrades silently. Without an agents service there is
+  nothing to hold, and the run proceeded indistinguishably from a run that
+  waited and found everyone idle. The release function now carries .gated, and
+  the update result reports unguarded: true with a message, plus an explicit
+  idle-gate line in the update log.
+- A bulk run passes the row it already read into setOne, which otherwise calls
+  readRows() -- a full listPlugins() over ~200 loader entries -- on every row.
+
+Also adds .gitattributes (text=auto eol=lf) so a Windows checkout stops
+rewriting whole files, and test/behaviour.mjs: 27 assertions over the decision
+functions behind these bugs (package naming, cancellation truth, idle-gate
+flag, write gate, migration list, rollback non-cancellability).

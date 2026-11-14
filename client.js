@@ -418,7 +418,13 @@ window.__ModuleLoader__.load({
           ? { method: 'GET', headers: { accept: 'application/json' } }
           : {
               method: 'POST',
-              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              headers: {
+                'content-type': 'application/json',
+                accept: 'application/json',
+                // 和宿主端的写操作闸门配对：面板自己永远带这个头，所以即使
+                // 某个环境下浏览器没发 Origin / Sec-Fetch-Site 也照样放行。
+                'x-dsh-plugin-rack': '1',
+              },
               body: JSON.stringify(body),
             };
       // Without this a stuck Host call pins busy/pending forever and the only
@@ -1456,7 +1462,20 @@ window.__ModuleLoader__.load({
         const needle = query.trim().toLowerCase();
         const matches = (row) => {
           if (needle.length === 0) return true;
-          const haystack = (row.name + ' ' + row.moduleName + ' ' + row.entryId).toLowerCase();
+          // patchId 进搜索词：像 cc-safety-net 这种 moduleName 是一条 file:// 路径、
+          // 包名要靠 patchId 才认得出来的行，用户凭包名也得能搜到。
+          // description 也进：有人记得「余额挂件」但不记得包名。
+          const haystack = (
+            row.name +
+            ' ' +
+            row.moduleName +
+            ' ' +
+            row.entryId +
+            ' ' +
+            (row.patchId === null || row.patchId === undefined ? '' : row.patchId) +
+            ' ' +
+            (row.description === null || row.description === undefined ? '' : row.description)
+          ).toLowerCase();
           return haystack.indexOf(needle) >= 0;
         };
         const stateOk = (row) => {

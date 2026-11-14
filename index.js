@@ -1381,7 +1381,11 @@ async function actBulk(ctx, enabled, scope, mode) {
     for (const row of targets) {
       if (job.cancelled) break
       job.current = row.name
-      const outcome = await setOne(ctx, row.entryId, enabled)
+      // Pass the row we already read: setOne would otherwise call readRows()
+      // again, and that is a full pluginManager.listPlugins() over ~200 loader
+      // entries on every single row of the batch. The row cannot have changed
+      // under us either — the mutation mutex is held for the whole run.
+      const outcome = await setOne(ctx, row.entryId, enabled, row)
       if (outcome.ok !== true) job.failed += 1
       job.finished += 1
     }
@@ -1644,15 +1648,37 @@ async function checkUpdates(ctx) {
  * inbox work until the returned promise settles. A synchronous throw means an
  * Agent is mid-turn right now; the caller reports that instead of racing it.
  */
+/**
+ * Hold every running agent against starting new work, so a pnpm run can rewrite
+ * node_modules without a session loading code from it half-way.
+ *
+ * The returned function release()s every hold and carries a `gated` flag.
+ *
+ * When the host exposes no `agents` service there is nothing to hold, and the
+ * caller proceeds **without** the idle guarantee. That used to be indistinguishable
+ * from "we waited and every agent was idle": both produced a silently successful
+ * run, so a host where the service is missing (an older release, a headless
+ * profile, a renamed service) would rewrite node_modules under a live session
+ * and report success. The flag lets the caller tell the user which one happened.
+ */
 async function holdAgents(ctx) {
   const service = ctx.get === undefined ? undefined : ctx.get('agents')
-  const listed = service !== undefined && service !== null && typeof service.list === 'function' ? service.list() : []
+  const available = service !== undefined && service !== null && typeof service.list === 'function'
+  const listed = available ? service.list() : []
   const handles = []
   for (const agent of Array.isArray(listed) ? listed : []) {
     if (agent === null || typeof agent !== 'object') continue
     if (typeof agent.id !== 'string' || agent.id === '') continue
     if (typeof agent.whenIdle !== 'function' || typeof agent.runMaintenance !== 'function') continue
     handles.push(agent)
+  }
+  // No service at all: there is no gate to take, but the caller must know that
+  // it is proceeding unguarded rather than after a successful wait.
+  if (!available) {
+    const releaseUngated = () => {}
+    releaseUngated.gated = false
+    releaseUngated.agents = 0
+    return releaseUngated
   }
   const held = []
   const releaseAll = () => {
@@ -1662,6 +1688,8 @@ async function holdAgents(ctx) {
       entry.release()
     }
   }
+  releaseAll.gated = true
+  releaseAll.agents = handles.length
   try {
     for (const handle of handles) {
       let release = () => {}
@@ -2174,6 +2202,9 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
       await new Promise(resume => setTimeout(resume, 3000))
     }
   }
+  // 宿主没有 agents 服务时维护门是空的：更新照样能跑，但**没有**「等所有会话空闲」
+  // 这层保护。这件事必须让用户知道，不能和「等过了、都空闲」长得一模一样。
+  const unguarded = release !== null && release.gated === false
 
   // 抢到维护门之后、真正 spawn pnpm 之前，最后再看一次取消。
   if (jobCancelled(job) || (activeJobAbort !== null && activeJobAbort.signal.aborted)) {
@@ -2262,6 +2293,7 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
       `updated: ${planned.map(item => `${item.name} ${item.current} -> ${item.latest}`).join(', ')}`,
       `whitelist entries added: ${allowed}`,
       `hot swap: ${swap.ok === true ? 'ok' : swap.reason}`,
+      `idle gate: ${unguarded ? 'unavailable (host exposes no agents service)' : 'held'}`,
       '',
       result.output.slice(-4000),
     ].join('\n'),
@@ -2271,6 +2303,10 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
     updated: planned.map(item => ({ name: item.name, from: item.current, to: item.latest })),
     hotSwap: swap,
     restart: swap.ok !== true,
+    // 没有维护门时如实上报：用户有权知道这次是在会话可能正跑着的时候改了 node_modules。
+    ...(unguarded
+      ? { unguarded: true, message: '已完成，但宿主没有 agents 服务：这次没等所有会话空闲就改动了 node_modules' }
+      : {}),
     log,
   }
 }
@@ -3719,6 +3755,26 @@ async function handle(ctx, req, res) {
     const type = String(req.headers['content-type'] ?? '').toLowerCase()
     if (!type.startsWith('application/json')) {
       return send(res, 415, { ok: false, message: 'content-type must be application/json' })
+    }
+    // 写操作额外要求「你确实是从这个面板来的」。
+    //
+    // 前面两道闸（Host + Origin）只证明请求没被别的站点冒名，但如果一个请求
+    // 压根不带 Origin，那道闸就是放行的 —— `curl -X POST` 正好属于这类。
+    // 这样任何在本机跑着的脚本都能卸载插件、装任意 npm 包，而它连浏览器都不用开。
+    //
+    // 判据：浏览器发的同源请求一定带 Origin 或 Sec-Fetch-Site；两者都没有的
+    // 客户端必须显式声明意图 —— 带上 `x-dsh-plugin-rack: 1`，用来区分「我知道
+    // 我在调这个接口」和「某个页面顺手打了个 POST」。
+    const secFetchSite = String(req.headers['sec-fetch-site'] ?? '').toLowerCase()
+    const explicit = String(req.headers['x-dsh-plugin-rack'] ?? '') === '1'
+    const fromPage = origin !== undefined && origin !== null && String(origin) !== ''
+    const sameSite = secFetchSite === 'same-origin' || secFetchSite === 'none'
+    if (!fromPage && !sameSite && !explicit) {
+      return send(res, 403, {
+        ok: false,
+        message:
+          'write requests need an Origin header, same-site Sec-Fetch-Site, or an explicit x-dsh-plugin-rack: 1 header',
+      })
     }
   }
 

@@ -1,0 +1,20 @@
+# Normalise line endings in the repository, not in every diff.
+#
+# This project is developed on Windows and published to npm; a checkout that
+# silently converts CRLF to LF (or back) makes every whitespace-only change
+# look like a 30-line rewrite of the whole file, which buries the real diff.
+#
+# `text=auto` lets git store LF internally and check out the native ending.
+* text=auto eol=lf
+
+# Files where the exact bytes matter: they are served to a browser or copied
+# verbatim by tooling, so no newline translation.
+*.svg  text
+*.json text
+*.yml  text
+*.md   text
+
+# Binary-ish artefacts that must never be normalised.
+*.tgz  binary
+*.png  binary
+*.ico  binary

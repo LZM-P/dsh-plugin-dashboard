@@ -178,6 +178,13 @@ POST /api/dsh-plugin-rack/uninstall   { name }
 
 1. **网络暴露面**：API 只在 `127.0.0.1` / `localhost` / `::1` 上可达。宿主的 web server 本来就只绑 loopback，所以外网碰不到这个端口。
 2. **Host / Origin 校验**：每个请求都先过两道闸——Host 头必须指向 loopback，Origin 头（如果存在）也必须解析到 loopback。这挡的是同机浏览器里的恶意网页：它无法用 `<img>` 或 `fetch` 跨站调用你的 API（DNS rebinding / CSRF 都被这两道闸拦下）。
+2b. **写操作还要求"你确实是从面板来的"**：`POST` 除了要 `application/json`，还必须带 `Origin`、或 `Sec-Fetch-Site: same-origin`、或显式加上 `x-dsh-plugin-rack: 1` 请求头。原因是前两道闸对"完全不带 Origin"的请求是放行的，而 `curl -X POST` 正好属于这一类——不加这道门，本机任何脚本都能卸载插件、装任意 npm 包，连浏览器都不用开。面板自己永远带这个头；你要写脚本调接口时也带一个就行：
+   ```bash
+   curl -X POST http://127.0.0.1:9546/api/dsh-plugin-rack/bulk \
+     -H 'content-type: application/json' \
+     -H 'x-dsh-plugin-rack: 1' \
+     -d '{"enabled":false,"scope":"installed"}'
+   ```
 3. **卸载白名单**：界面上的「卸载」按钮不是对所有行都显示。只有宿主 `pluginManager` 服务明确标记为 `removable` 的包才会出现按钮。核心组件、面板自己、harness 命脉——这些**永远不会**出现在可卸载列表里，所以误点卸载也不会把系统拆坏。
 4. **更新回滚**：批量更新前会备份 `package.json` + `pnpm-lock.yaml` + `pnpm-workspace.yaml` 三个文件。pnpm 返回非零退出码时，先把这三个文件写回原内容，再跑一次 `pnpm install --prefer-offline` 把 `node_modules` 也拨回去。**失败 = 一个包都没改动**，不会留下半个新依赖树。
 
