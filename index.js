@@ -25,6 +25,8 @@
  *   POST /api/dsh-plugin-rack/bulk        { enabled, scope?, save?, cancel? }
  *   POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
  *   GET  /api/dsh-plugin-rack/summary     read-only rows for scripts and future agent tools
+ *   GET  /api/dsh-plugin-rack/job         the install running now, or the last one that finished
+ *   POST /api/dsh-plugin-rack/job         { action: 'cancel' }  stop the run that is executing now
  *
  * Bodies must be `application/json` (anything else answers 415), a known path
  * with the wrong verb answers 405, and only one write operation runs at a time
@@ -50,7 +52,7 @@
  * overrides this plugin created are ever removed — so the user can switch
  * plugins off and restart once instead of waiting for a reload per plugin.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -89,6 +91,8 @@ const ROUTES = {
   // 只读摘要，给脚本和未来的 agent tool 用。写操作刻意不暴露在这里——
   // 让一个语言模型替人点「确认卸载」不是个好主意，那种通道要单独的权限设计。
   '/summary': ['GET'],
+  // 后台更新任务：面板关掉之后 pnpm 还在跑，重新打开时用它把进度接回来。
+  '/job': ['GET', 'POST'],
 }
 
 export const name = 'plugin-rack'
@@ -106,6 +110,94 @@ function stateDir() {
 
 function stateFile() {
   return join(stateDir(), 'state.json')
+}
+
+/** Where the last update run is recorded, so a closed panel can pick it back up. */
+function jobFile() {
+  return join(stateDir(), 'job.json')
+}
+
+/** The run this host process is executing right now, if any. */
+let activeJob = null
+/** Aborts the network work of the run in `activeJob` when the user cancels it. */
+let activeJobAbort = null
+
+function readJob() {
+  try {
+    const parsed = JSON.parse(readFileSync(jobFile(), 'utf8'))
+    if (parsed !== null && typeof parsed === 'object' && typeof parsed.id === 'string') return parsed
+  } catch (error) {
+    // 没有 job.json 就是还没更新过；坏文件当没有，下次写入会重建成好的。
+    void error
+  }
+  return null
+}
+
+function persistJob(job) {
+  try {
+    mkdirSync(stateDir(), { recursive: true })
+    writeFileSync(jobFile(), JSON.stringify(job, null, 2) + '\n', 'utf8')
+  } catch {
+    // 只读的 home 也能跑完这次更新，只是下次打开面板接不到它。
+  }
+}
+
+/**
+ * 登记一次装包任务。更新可能要跑 25 分钟，浏览器这时候完全可能被关掉，
+ * 所以任务的状态必须活在宿主里，而不是活在发起它的那个请求里。
+ */
+function beginJob(kind, names) {
+  const job = {
+    id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+    kind,
+    names: Array.isArray(names) ? names.filter(one => typeof one === 'string') : [],
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    ok: null,
+    message: null,
+    restart: false,
+    updated: [],
+    failed: [],
+  }
+  activeJob = job
+  activeJobAbort = new AbortController()
+  persistJob(job)
+  return job
+}
+
+function endJob(job, result) {
+  job.finishedAt = new Date().toISOString()
+  job.ok = result !== null && typeof result === 'object' && result.ok === true
+  job.message = result !== null && typeof result === 'object' && typeof result.message === 'string' ? result.message : null
+  job.restart = result !== null && typeof result === 'object' && result.restart === true
+  job.updated = result !== null && typeof result === 'object' && Array.isArray(result.updated) ? result.updated : []
+  job.failed = result !== null && typeof result === 'object' && Array.isArray(result.failed) ? result.failed : []
+  if (activeJob !== null && activeJob.id === job.id) {
+    activeJob = null
+    activeJobAbort = null
+  }
+  persistJob(job)
+  return job
+}
+
+/**
+ * 取消正在跑的任务。下载阶段的 fetch 会立刻中断；pnpm 已经起来的那种只能等它自己
+ * 退出——把 job 标成失败，让用户先看见「停了」，别在那儿对着转圈干等。
+ */
+function cancelJob() {
+  const job = activeJob
+  if (job === null) return { ok: false, message: 'no update is running' }
+  if (activeJobAbort !== null) activeJobAbort.abort(new Error('cancelled by the user'))
+  endJob(job, { ok: false, message: 'cancelled by the user' })
+  return { ok: true, job: jobStatus() }
+}
+
+/** 正在跑的任务，或上一次的结果；finishedAt 为空但已不在跑 = 被宿主重启掐断了。 */
+function jobStatus() {
+  const job = activeJob !== null ? activeJob : readJob()
+  if (job === null) return null
+  const running = activeJob !== null && activeJob.id === job.id
+  return Object.assign({}, job, { running, cancelable: running, interrupted: !running && job.finishedAt === null })
 }
 
 function emptyRoster() {
@@ -1125,11 +1217,20 @@ async function actRoster(ctx, mode, scope, auto) {
 }
 
 function send(res, status, payload) {
+  // 面板可能在一次 25 分钟的装包中途被关掉。结果写不回那个已经断掉的连接不算
+  // 失败——任务本身记在 job.json 里，下次打开面板由 /job 接回去。
+  if (res.writableEnded || res.destroyed) return
+  res.once('error', () => {})
   const body = JSON.stringify(payload)
-  res.statusCode = status
-  res.setHeader('content-type', 'application/json; charset=utf-8')
-  res.setHeader('cache-control', 'no-store')
-  res.end(body)
+  try {
+    res.statusCode = status
+    res.setHeader('content-type', 'application/json; charset=utf-8')
+    res.setHeader('cache-control', 'no-store')
+    res.end(body)
+  } catch (error) {
+    // 连接已经没了：同上，任务照样跑完了。
+    void error
+  }
 }
 
 const MAX_BODY = 1 << 20
@@ -1978,19 +2079,59 @@ function sha256OfFile(path) {
  * tens of megabytes, and a single `arrayBuffer()` avoids a stream wrapper that
  * would have to be kept in step with the hash check right after it.
  */
-async function downloadFile(url, dest) {
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(30 * 60 * 1000),
-    headers: githubHeaders(),
-    redirect: 'follow',
-  })
-  if (!response.ok) throw new Error(`download answered ${response.status}`)
-  const bytes = Buffer.from(await response.arrayBuffer())
-  if (bytes.length === 0) throw new Error('download returned an empty body')
-  writeFileSync(dest, bytes)
-  return bytes.length
-}
+/**
+ * A release asset download is bounded, but generously: these tarballs run tens
+ * of megabytes and a slow link really does need minutes (one measured run took
+ * 12m for 30 MB). The stall timer is the real guard against a dead socket; this
+ * one only stops an endless trickle.
+ */
+const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000
+/** No byte for this long means the connection is dead, not slow. */
+const DOWNLOAD_STALL_MS = 30 * 1000
 
+async function downloadFile(url, dest, outer) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error('下载超过 30 分钟，已放弃')), DOWNLOAD_TIMEOUT_MS)
+  const onOuterAbort = () => controller.abort(outer !== undefined && outer !== null ? outer.reason : new Error('cancelled'))
+  if (outer !== undefined && outer !== null) {
+    if (outer.aborted) controller.abort(outer.reason)
+    else outer.addEventListener('abort', onOuterAbort, { once: true })
+  }
+  let stall = null
+  const touch = () => {
+    if (stall !== null) clearTimeout(stall)
+    stall = setTimeout(() => controller.abort(new Error('下载卡住：30 秒没有收到数据')), DOWNLOAD_STALL_MS)
+  }
+  try {
+    touch()
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: githubHeaders(),
+      redirect: 'follow',
+    })
+    if (!response.ok) throw new Error(`download answered ${response.status}`)
+    if (response.body === null) throw new Error('download returned no body')
+    const reader = response.body.getReader()
+    const chunks = []
+    let total = 0
+    for (;;) {
+      touch()
+      const step = await reader.read()
+      if (step.done) break
+      if (step.value !== undefined && step.value !== null) {
+        chunks.push(Buffer.from(step.value))
+        total += step.value.byteLength
+      }
+    }
+    if (total === 0) throw new Error('download returned an empty body')
+    writeFileSync(dest, Buffer.concat(chunks, total))
+    return total
+  } finally {
+    clearTimeout(timer)
+    if (stall !== null) clearTimeout(stall)
+    if (outer !== undefined && outer !== null) outer.removeEventListener('abort', onOuterAbort)
+  }
+}
 /**
  * owner/repo of an installed package, read from the `repository` field of the
  * package that is actually on disk. Works for any install kind, which is what
@@ -2253,14 +2394,21 @@ async function applyFileUpgrade(ctx, name) {
     }
   }
 
-  let bytes
+  let bytes = 0
   try {
-    bytes = await downloadFile(plan.target.asset.url, partial)
-    const actual = sha256OfFile(partial)
-    if (actual !== plan.target.sha256) {
-      throw new Error(`官方 sha256 是 ${plan.target.sha256}，下下来的是 ${actual}`)
+    // A previous attempt may already have fetched and verified this very asset.
+    // Reusing it turns a 12-minute retry into an instant one, and the sha256 of
+    // the file on disk is the proof it is the official tarball.
+    if (existsSync(target) && sha256OfFile(target) === plan.target.sha256) {
+      bytes = statSync(target).size
+    } else {
+      bytes = await downloadFile(plan.target.asset.url, partial, activeJobAbort === null ? undefined : activeJobAbort.signal)
+      const actual = sha256OfFile(partial)
+      if (actual !== plan.target.sha256) {
+        throw new Error(`官方 sha256 是 ${plan.target.sha256}，下下来的是 ${actual}`)
+      }
+      renameSync(partial, target)
     }
-    renameSync(partial, target)
   } catch (error) {
     try {
       if (existsSync(partial)) unlinkSync(partial)
@@ -2277,12 +2425,9 @@ async function applyFileUpgrade(ctx, name) {
   try {
     release = await holdAgents(ctx)
   } catch {
-    try {
-      if (existsSync(target)) unlinkSync(target)
-    } catch {
-      // Best effort.
-    }
-    return { ok: false, waiting: true, message: '有会话正在运行，等它结束后再点一次升级' }
+    // The verified tarball stays on disk on purpose: the next click re-checks
+    // its sha256 and skips the download entirely.
+    return { ok: false, waiting: true, message: '有会话正在运行，等它结束后再点一次升级（附件已备好，不会重新下载）' }
   }
 
   let outcome = null
@@ -2629,6 +2774,18 @@ async function handle(ctx, req, res) {
   if (method === 'GET' && path === '/state') {
     return send(res, 200, await snapshot(ctx))
   }
+  // 上一次/正在跑的更新任务。面板可能在中途被关掉，回来时靠这个续上进度。
+  if (method === 'GET' && path === '/job') {
+    return send(res, 200, { ok: true, job: jobStatus() })
+  }
+  // 取消正在跑的那一次。下载阶段能立刻停，pnpm 阶段只能等它退出。
+  if (method === 'POST' && path === '/job') {
+    const body = await readJsonBody(req)
+    const action = body !== null && typeof body === 'object' ? body.action : null
+    if (action !== 'cancel') return send(res, 400, { ok: false, message: "action must be 'cancel'" })
+    const result = cancelJob()
+    return send(res, result.ok === true ? 200 : 409, result)
+  }
   // 给脚本/未来的 agent 工具用的精简快照：每行只保留名字、版本、开关、phase、
   // 是否自动、是否核心。比 /state 干净，不带详情缓存、不带 bulk 进度。
   if (method === 'GET' && path === '/summary') {
@@ -2665,7 +2822,17 @@ async function handle(ctx, req, res) {
     try {
       const body = await readJsonBody(req)
       const names = Array.isArray(body.names) ? body.names : []
-      return send(res, 200, await applyUpdates(ctx, names))
+      // 任务先在宿主登记再开跑：请求断了（面板关了、标签页没了）它照样跑完，
+      // 结果写进 job.json，下次打开面板时由 /job 接回来。
+      const job = beginJob('updates', names)
+      try {
+        const result = await applyUpdates(ctx, names)
+        endJob(job, result)
+        return send(res, 200, Object.assign({}, result, { jobId: job.id }))
+      } catch (error) {
+        endJob(job, { ok: false, message: error instanceof Error ? error.message : String(error) })
+        throw error
+      }
     } finally {
       endMutation()
     }
@@ -2691,7 +2858,16 @@ async function handle(ctx, req, res) {
     }
     try {
       const body = await readJsonBody(req)
-      return send(res, 200, await applyExtras(ctx, String(body.name ?? ''), String(body.action ?? '')))
+      const action = String(body.action ?? '')
+      const job = beginJob('extras', [String(body.name ?? '')])
+      try {
+        const result = await applyExtras(ctx, String(body.name ?? ''), action)
+        endJob(job, result)
+        return send(res, 200, Object.assign({}, result, { jobId: job.id }))
+      } catch (error) {
+        endJob(job, { ok: false, message: error instanceof Error ? error.message : String(error) })
+        throw error
+      }
     } finally {
       endMutation()
     }
@@ -2782,7 +2958,8 @@ export function apply(ctx) {
           const message = error instanceof Error ? error.message : String(error)
           const status = error instanceof HttpError ? error.status : 500
           if (!res.headersSent) send(res, status, { ok: false, message })
-          else res.end()
+          else if (!res.writableEnded && !res.destroyed) res.end()
+          else void 0
         }),
     }),
   )

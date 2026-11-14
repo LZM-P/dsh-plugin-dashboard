@@ -37,6 +37,8 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 ### 更新
 
 - 「检查更新」把 profile 里按精确版本锁定的依赖逐个查 registry 最新版，有新的直接在列表行里标出来：`⬆ v0.1.29 ➡ v0.1.30 npm`，**点一下只更新那一个插件**。
+- 更新由宿主执行：**点完就可以关掉面板**，pnpm 照样跑完。重新打开面板时，顶部会显示「后台更新中 · N 个插件」，跑完了补一条结果提示——不用守着这个界面，也不用去翻日志。卡住了可以点横幅右边的「取消」。
+- 下载官方附件有 30 分钟总上限、30 秒无数据即判定卡死：GitHub 偶尔会把连接挂住，宁可报错也不让面板一直转圈。30 MB 的包在慢线路上实测要 12 分钟，所以总上限给得宽；下过的包会按 sha256 复用，重试同一版本不会重新下载。
 - 「全部更新」勾选后批量执行，**执行前先把将运行的命令显示给你看**。
 - 装完**自动热替换**，新版本当场生效，不用重启；界面类插件刷新一下页面即可。
 - 能识别 **GitHub 直装 / npm 镜像 tar 包 / 本地文件包 / 本地软链** 这几种特殊装法，并给出对应的处理方式。
@@ -123,6 +125,8 @@ GET  /api/dsh-plugin-rack/updatelog   上一次更新的日志
 GET  /api/dsh-plugin-rack/registries  当前生效的 registry
 GET  /api/dsh-plugin-rack/removable   可以卸载的插件名单
 GET  /api/dsh-plugin-rack/inspect     安装预检（?spec=，只查不装）
+GET  /api/dsh-plugin-rack/job         正在跑的装包任务，或上一次的结果（running / finishedAt / interrupted）
+POST /api/dsh-plugin-rack/job         { action: 'cancel' } 取消正在跑的那一次
 POST /api/dsh-plugin-rack/plugin      { entryId, enabled?, auto? }
 POST /api/dsh-plugin-rack/bulk        { enabled, scope, save?, cancel? }
 POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }

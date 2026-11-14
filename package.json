@@ -5,10 +5,15 @@
   "description": "DSH 插件管理：所有插件一屏看完，一个开关直接开关，更新完自动热替换不用重启。/ Plugin rack for DSH: every plugin in one list with a power switch, an auto/manual flag that scopes the one-click bulk actions, and hot-swapped updates that need no restart.",
   "author": "Jaside (LZM-P)",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/LZM-P/dsh-plugin-dashboard" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LZM-P/dsh-plugin-dashboard"
+  },
   "homepage": "https://github.com/LZM-P/dsh-plugin-dashboard#readme",
   "bugs": "https://github.com/LZM-P/dsh-plugin-dashboard/issues",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -18,20 +23,35 @@
     "upgrade",
     "uninstall"
   ],
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "LICENSE", "README.md", "test/self-check.mjs"],
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "LICENSE",
+    "README.md",
+    "test/self-check.mjs",
+    "test/job-background.mjs"
+  ],
   "scripts": {
-    "check": "node test/self-check.mjs"
+    "check": "node test/self-check.mjs",
+    "test": "node test/job-background.mjs"
   },
   "dsh": {
     "manifestVersion": 1,
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,

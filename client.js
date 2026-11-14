@@ -39,8 +39,8 @@ window.__ModuleLoader__.load({
         groupAllAuto: 'Whole group is auto',
         groupAllManual: 'Whole group is manual',
         colName: 'Plugin',
-        colPower: 'Power',
-        colMode: 'Auto / manual',
+        colPower: 'On/off',
+        colMode: 'Mode',
         modeAuto: 'Auto',
         modeManual: 'Manual',
         filterAll: 'All',
@@ -166,6 +166,11 @@ window.__ModuleLoader__.load({
         updateSwapped: 'New versions are live; refresh the page for client-side plugins',
         hasNewVersion: 'Update available',
         updateNow: 'Update just this plugin',
+        jobRunning: 'Host is updating in the background · {n} plugins',
+        jobDone: 'Background update finished',
+        jobFailed: 'Background update failed',
+        jobInterrupted: 'The last update never finished (host restarted or interrupted)',
+        jobCancel: 'Cancel',
         updateRolledBack: 'Rolled back',
         updateFailed: 'Failed',
         updateSelectAll: 'Select all',
@@ -190,6 +195,8 @@ window.__ModuleLoader__.load({
         refresh: '刷新',
         enableAll: '一键全部开启',
         disableAll: '一键全部关闭',
+        colPower: '开关',
+        colMode: '模式',
         markAllAuto: '全部设为自动',
         markNoneAuto: '全部设为手动',
         resetInstalled: '自动=已安装',
@@ -334,6 +341,11 @@ window.__ModuleLoader__.load({
         updateSwapped: '新版本已即时生效；界面类插件刷新页面即可',
         hasNewVersion: '有新版',
         updateNow: '只更新这一个插件',
+        jobRunning: '宿主正在后台更新 · {n} 个插件',
+        jobDone: '后台更新已完成',
+        jobFailed: '后台更新失败',
+        jobInterrupted: '上次更新没跑完（宿主重启或中断）',
+        jobCancel: '取消',
         updateRolledBack: '已回滚',
         updateFailed: '失败',
         updateSelectAll: '全选',
@@ -354,6 +366,8 @@ window.__ModuleLoader__.load({
       },
     };
 
+    // 哪个任务的结果已经报过了。存在 localStorage 里，面板关掉再打开不会重复弹。
+    const JOB_SEEN_KEY = 'plugin-rack:seenJob';
     const LANG_KEY = 'plugin-rack:lang';
     const DEFAULT_LANG = 'zh';
 
@@ -465,6 +479,10 @@ window.__ModuleLoader__.load({
       '.pd-install-label{font-size:12px;color:var(--dsw-alias-label-secondary);flex:none}',
       '.pd-install-input{flex:1 1 260px;max-width:420px}',
       '.pd-cmd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:4px 8px}',
+      '.pd-jobbar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;background:var(--dsw-alias-bg-secondary,#f5f5f5);font-size:12px;color:var(--dsw-alias-label-secondary,#666)}',
+      '.pd-jobbar-cancel{margin-left:auto;border:0;background:transparent;padding:0 4px;font-size:12px;',
+      'color:var(--dsw-alias-label-secondary,#666);cursor:pointer}',
+      '.pd-jobbar-cancel:hover{color:var(--dsw-alias-label-primary,#111)}',
       '.pd-toolbar{position:sticky;top:0;z-index:3;display:flex;flex-direction:column;gap:8px;',
       'margin:0 -24px 14px;padding:10px 24px;background:var(--dsw-alias-bg-base);',
       'border-bottom:1px solid var(--dsw-alias-border-l1)}',
@@ -475,7 +493,8 @@ window.__ModuleLoader__.load({
       'border:1px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
       '.pd-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-btn:disabled{opacity:.5;cursor:not-allowed}',
-      '.pd-btn-sm{font-size:12px;line-height:16px;padding:2px 9px;border-radius:7px}',
+      '.pd-btn-sm{display:inline-flex;align-items:center;justify-content:center;',
+      'font-size:12px;line-height:16px;min-height:26px;padding:0 10px;border-radius:7px}',
       '.pd-btn-quiet{border-color:transparent;background:transparent;color:var(--dsw-alias-label-secondary)}',
       '.pd-btn-quiet:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-btn-primary{border-color:transparent;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}',
@@ -486,11 +505,17 @@ window.__ModuleLoader__.load({
       '.pd-input:focus{border-color:var(--dsw-alias-state-business-primary)}',
       '.pd-stats{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}',
       '.pd-stats b{font-weight:600;color:var(--dsw-alias-label-primary)}',
-      '.pd-group{margin-top:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;',
+      // One grid template shared by the column-head line and every row, so the
+      // labels sit exactly over their controls and no row can drift sideways.
+      '.pd-group{--pd-cols:12px minmax(0,1fr) 40px 56px 28px 20px;',
+      'margin-top:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;',
       'background:var(--dsw-alias-bg-layer-1);overflow:hidden}',
-      // Group header is two rows: title line on top, the four bulk buttons get
-      // their own line so they never wrap mid-group and crowd the hint badge.
-      '.pd-group-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:9px 14px;',
+      // Group header: title line, then a column-head line on the row grid.
+      '.pd-group-head{display:flex;flex-direction:column;gap:5px;padding:9px 14px 7px;',
+      '.pd-title-row{display:flex;align-items:center;gap:8px;min-width:0}',
+      '.pd-colhead{display:grid;grid-template-columns:var(--pd-cols);gap:10px;align-items:center}',
+      '.pd-colhead-label{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);',
+      'text-align:center;white-space:nowrap}',
       'background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l2)}',
       '.pd-group-head[data-collapsed="true"]{border-bottom:none}',
       '.pd-chevron{appearance:none;border:none;background:transparent;padding:0;cursor:pointer;',
@@ -500,20 +525,18 @@ window.__ModuleLoader__.load({
       '.pd-group-title{font-size:13px;font-weight:600;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%}',
       '.pd-group-count{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}',
       '.pd-group-note{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);margin-left:2px}',
-      '.pd-group-hint{font-size:11px;line-height:16px;padding:1px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;color:var(--dsw-alias-label-tertiary);cursor:default;user-select:none}',
-      '.pd-group-act{margin-left:auto;display:flex;align-items:center;gap:8px}',
-      // The bulk row takes the full second line of the group header; buttons
-      // stay on one line, the hint badge sits at the right end of the same row.
-      '.pd-group-bulk{display:flex;align-items:center;gap:8px;flex:1 0 100%;order:2;flex-wrap:nowrap;overflow-x:auto}',
+      // Bulk buttons sit in the name-column cell of the column-head line.
+      '.pd-group-bulk{display:flex;align-items:center;gap:8px;min-width:0;overflow-x:auto}',
       '.pd-group-bulk .pd-btn{flex:none}',
       '.pd-group-bulk-sep{width:1px;height:16px;background:var(--dsw-alias-border-l2);margin:0 2px;flex:none}',
       // Small inline uninstall button at the end of a plugin row: grey trash
       // icon, turns red on hover / when it is in the click-again confirm state.
       '.pd-row-uninstall{appearance:none;border:none;background:transparent;padding:0;cursor:pointer;',
       'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;',
-      'color:var(--dsw-alias-label-tertiary);flex:none}',
+      'color:var(--dsw-alias-label-tertiary);flex:none;justify-self:center}',
       '.pd-row-uninstall:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);',
       'color:var(--dsw-alias-state-error-primary)}',
+      '.pd-row:hover .pd-row-uninstall{color:var(--dsw-alias-label-secondary)}',
       '.pd-row-uninstall:disabled{opacity:.45;cursor:not-allowed}',
       '.pd-row-uninstall-confirm{color:var(--dsw-alias-state-error-primary);',
       'background:var(--dsw-alias-interactive-bg-hover-danger)}',
@@ -524,9 +547,11 @@ window.__ModuleLoader__.load({
       '.pd-confirm-act{display:flex;align-items:center;gap:8px;flex:none}',
       '.pd-item{border-bottom:1px solid var(--dsw-alias-border-l1)}',
       '.pd-item:last-child{border-bottom:none}',
-      '.pd-row{display:grid;grid-template-columns:12px minmax(0,1fr) max-content 44px 64px max-content 20px;',
-      'align-items:center;gap:12px;',
+      '.pd-row{display:grid;grid-template-columns:var(--pd-cols);',
+      'align-items:center;gap:10px;',
       'padding:7px 14px;cursor:pointer}',
+      '.pd-cell{display:flex;align-items:center;min-width:0}',
+      '.pd-cell-power,.pd-cell-mode{justify-self:center}',
       // 行最左的状态点：颜色即语义，title 写具体状态文本，失败时整行冒红。
       '.pd-dot-status{width:8px;height:8px;border-radius:50%;flex:none;justify-self:center;',
       'background:var(--dsw-alias-border-l3)}',
@@ -546,7 +571,7 @@ window.__ModuleLoader__.load({
       '.pd-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-row-open{background:var(--dsw-alias-interactive-bg-active)}',
       '.pd-version{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);flex:none}',
-      '.pd-vercell{flex:none;display:flex;align-items:center;justify-content:flex-end;margin-right:8px}',
+      '.pd-name-act{flex:none;display:flex;align-items:center;align-self:center;margin-left:2px}',
       '.pd-upbtn-spin{flex:none;margin-right:1px}',
       '.pd-upbtn-open{text-decoration:none}',
       '.pd-src{flex:none;font-size:10px;line-height:16px;padding:0 6px;border-radius:6px;white-space:nowrap;',
@@ -575,7 +600,7 @@ window.__ModuleLoader__.load({
       '.pd-desc-k{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary)}',
       '.pd-row-chev{appearance:none;border:none;padding:0;background:transparent;color:var(--dsw-alias-label-tertiary);',
       'display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;',
-      'cursor:pointer;transition:transform .15s ease}',
+      'cursor:pointer;transition:transform .15s ease;justify-self:center}',
       '.pd-row-chev[data-collapsed="true"]{transform:rotate(-90deg)}',
       '.pd-row-chev:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}',
       '.pd-detail{display:flex;flex-direction:column;gap:2px;padding:2px 14px 10px;background:var(--dsw-alias-bg-layer-1)}',
@@ -585,7 +610,7 @@ window.__ModuleLoader__.load({
       '.pd-name{display:flex;align-items:baseline;gap:8px;min-width:0}',
       '.pd-name-main{font-size:13px;line-height:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}',
       '.pd-name-sub{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;',
-      'overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0}',
+      'overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}',
       '.pd-tags{display:flex;gap:4px;flex:0 0 auto;align-items:center}',
       '.pd-tag{font-size:10px;line-height:16px;padding:0 6px;border-radius:6px;white-space:nowrap;',
       'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary)}',
@@ -617,7 +642,8 @@ window.__ModuleLoader__.load({
       'animation:pd-ring .7s linear infinite}',
       '@keyframes pd-ring{to{transform:rotate(360deg)}}',
       '.pd-mode{appearance:none;border:1px solid var(--dsw-alias-border-l3);background:transparent;border-radius:6px;',
-      'font:inherit;font-size:11px;line-height:16px;padding:1px 7px;cursor:pointer;white-space:nowrap;',
+      'font:inherit;font-size:11px;line-height:16px;min-width:46px;height:22px;padding:0 6px;cursor:pointer;white-space:nowrap;',
+      'display:inline-flex;align-items:center;justify-content:center;',
       'color:var(--dsw-alias-label-tertiary)}',
       '.pd-mode:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-mode:disabled{opacity:.5;cursor:not-allowed}',
@@ -774,6 +800,9 @@ window.__ModuleLoader__.load({
         const [installInfo, setInstallInfo] = React.useState(null);
         const [installLog, setInstallLog] = React.useState(null);
         const [bulkAsk, setBulkAsk] = React.useState(null);
+        // 后台更新任务：更新由宿主执行，面板关掉之后它还在跑。回到这里时把
+        // 进度、以及「跑完了没、成没成」接回来，而不是让人去翻日志。
+        const [job, setJob] = React.useState(null);
 
         // 展开过的行，详情只取一次并缓存；但列表一刷新（装了一个、卸了一个、
         // 升级了一个），缓存里那份的版本号与描述就全过时了，所以 load() 会把缓存
@@ -1316,6 +1345,68 @@ window.__ModuleLoader__.load({
           return () => clearInterval(timer);
         }, [hasFailed, load]);
 
+        // 宿主的后台任务（POST /updates、POST /extras）。这个轮询常驻：面板被
+        // 关掉时更新的结局没人接，重新打开只能靠它补一次，顺便把列表演一遍。
+        const seenJob = React.useRef(null);
+        React.useEffect(() => {
+          let alive = true;
+          const tick = async () => {
+            try {
+              const answer = await request('/job');
+              if (!alive) return;
+              const current = answer.job === undefined ? null : answer.job;
+              setJob(current);
+              if (current === null || current.finishedAt === null) return;
+              if (seenJob.current === null) {
+                try {
+                  seenJob.current = window.localStorage.getItem(JOB_SEEN_KEY) || '';
+                } catch (error) {
+                  void error;
+                  seenJob.current = '';
+                }
+              }
+              if (seenJob.current === current.id) return;
+              seenJob.current = current.id;
+              try {
+                window.localStorage.setItem(JOB_SEEN_KEY, current.id);
+              } catch (error) {
+                void error;
+              }
+              // 只报十分钟内结束的那次：几周前的旧结果不该在打开面板时冒出来。
+              const age = Date.now() - Date.parse(current.finishedAt);
+              if (Number.isFinite(age) && age > 10 * 60 * 1000) return;
+              if (current.ok === true) {
+                setToast({ kind: 'ok', text: t('jobDone') });
+              } else if (current.interrupted === true) {
+                setToast({ kind: 'warn', text: t('jobInterrupted') });
+              } else {
+                const detail = typeof current.message === 'string' && current.message.length > 0 ? ': ' + current.message : '';
+                setToast({ kind: 'warn', text: t('jobFailed') + detail });
+              }
+              checkUpdates(true);
+              load();
+            } catch (error) {
+              // 宿主正在重启时这里会失败，下一跳再试。
+              void error;
+            }
+          };
+          tick();
+          const timer = setInterval(tick, 5000);
+          return () => {
+            alive = false;
+            clearInterval(timer);
+          };
+        }, [t, load, checkUpdates]);
+
+        // 下载卡住时用户得能自己踩刹车，不然这条横幅会一直转到宿主超时。
+        const cancelJob = async () => {
+          try {
+            await request('/job', { action: 'cancel' });
+          } catch (error) {
+            setToast({ kind: 'warn', text: error instanceof Error ? error.message : String(error) });
+          }
+        };
+
         // Report the settled run once, then drop the local marker.
         const settledKey = settled === null ? null : settled.finished + '/' + settled.total + '/' + settled.failed;
         React.useEffect(() => {
@@ -1504,13 +1595,12 @@ window.__ModuleLoader__.load({
               typeof release === 'object' &&
               typeof release.version === 'string'
             ) {
-              // 本地压缩包没法在这儿一键换掉（要下载 + 校验 + 替换 vendor 里的文件），
-              // 所以只给一个跳到官方发布页的入口，装不装由人决定。
+              // 本地压缩包走 /extras 的 file-upgrade：下载官方附件、核对 sha256、
+              // 替换 vendor 里的文件再重装，失败会整块回滚，所以这里可以一键。
               updateOf.set(item.name, {
                 label: 'v' + release.version,
                 source: 'github',
-                action: 'open',
-                href: typeof release.url === 'string' ? release.url : null,
+                action: 'file-upgrade',
               });
             }
           }
@@ -1646,10 +1736,9 @@ window.__ModuleLoader__.load({
                   ? null
                   : h('div', { className: 'pd-name-sub', title: subtitle }, subtitle),
                 tags.length > 0 ? h('div', { className: 'pd-tags' }, tags) : null,
-              ),
               h(
                 'div',
-                { className: 'pd-vercell', onClick: (event) => event.stopPropagation() },
+                { className: 'pd-name-act', onClick: (event) => event.stopPropagation() },
                 (() => {
                   const info = updateOf.get(row.name);
                   if (info === undefined) {
@@ -1668,20 +1757,6 @@ window.__ModuleLoader__.load({
                   ];
                   const label =
                     t('updateNow') + '（' + info.source + '）：v' + (row.version ?? '?') + ' → ' + info.label;
-                  if (info.action === 'open') {
-                    return h(
-                      'a',
-                      {
-                        className: 'pd-upbtn pd-upbtn-open',
-                        href: info.href === null || info.href === undefined ? '#' : info.href,
-                        target: '_blank',
-                        rel: 'noreferrer',
-                        title: t('extrasOpenRelease'),
-                        onClick: (event) => event.stopPropagation(),
-                      },
-                      parts,
-                    );
-                  }
                   return h(
                     'button',
                     {
@@ -1697,9 +1772,11 @@ window.__ModuleLoader__.load({
                   );
                 })(),
               ),
+              ),
               h(
                 'div',
                 {
+                  className: 'pd-cell pd-cell-power',
                   onClick: (event) => event.stopPropagation(),
                   title: selfLocked ? t('selfLocked') : undefined,
                 },
@@ -1713,7 +1790,7 @@ window.__ModuleLoader__.load({
               ),
               h(
                 'div',
-                { onClick: (event) => event.stopPropagation() },
+                { className: 'pd-cell pd-cell-mode', onClick: (event) => event.stopPropagation() },
                 h(ModeControl, {
                   auto: auto,
                   disabled: locked || pending[row.entryId] === true,
@@ -1723,7 +1800,8 @@ window.__ModuleLoader__.load({
               ),
               // 行尾卸载入口：一个垃圾桶图标，平时灰色、hover 变红；
               // 复用 applyUninstall 的「点一下变确认、再点才真卸」两步流程。
-              // 只有宿主说 removable 的行才渲染，其他人连图标都没有。
+              // 只有宿主说 removable 的行才有图标；其余行渲染一个空占位，
+              // 占住同一列，保证所有行的开关/模式/箭头都对齐。
               removable !== null && removable.indexOf(row.name) >= 0
                 ? h(
                     'button',
@@ -1761,7 +1839,7 @@ window.__ModuleLoader__.load({
                           }),
                         ),
                   )
-                : null,
+                : h('span', null),
               h(
                 'button',
                 {
@@ -1929,6 +2007,7 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'pd-group-head', 'data-collapsed': isCollapsed ? 'true' : 'false' },
+              h('div', { className: 'pd-title-row' },
               h(
                 'button',
                 {
@@ -1954,11 +2033,16 @@ window.__ModuleLoader__.load({
               ),
               h('div', { className: 'pd-group-title' }, group.title),
               h('div', { className: 'pd-group-count' }, String(group.rows.length)),
+              ),
               group.showBulk === false
                 ? h('div', { className: 'pd-group-note' }, t('groupCoreHiddenNote'))
                 : h(
                     'div',
-                    { className: 'pd-group-bulk', onClick: (event) => event.stopPropagation() },
+                    { className: 'pd-colhead', onClick: (event) => event.stopPropagation() },
+                    h('span', null),
+                    h(
+                      'div',
+                      { className: 'pd-group-bulk' },
                 h(
                   'button',
                   {
@@ -2008,10 +2092,12 @@ window.__ModuleLoader__.load({
                   },
                   t('markNoneAuto'),
                 ),
-                // The hint badge lives at the right end of the button row, not
-                // in a margin-left:auto sibling that used to squeeze the buttons.
-                h('span', { className: 'pd-group-act' }, h('span', { className: 'pd-group-hint' }, t('groupPowerHint'))),
-              ),
+                    ),
+                    h('span', { className: 'pd-colhead-label' }, t('colPower')),
+                    h('span', { className: 'pd-colhead-label' }, t('colMode')),
+                    h('span', null),
+                    h('span', null),
+                  ),
             ),
             isCollapsed ? null : h('div', null, group.rows.map(rowNode)),
           );
@@ -2517,6 +2603,19 @@ window.__ModuleLoader__.load({
                   )
                 : null,
             ),
+            job !== null && job.running === true
+              ? h(
+                  'div',
+                  { className: 'pd-jobbar' },
+                  h('span', { className: 'pd-spin' }),
+                  h('span', null, t('jobRunning', { n: String(Array.isArray(job.names) ? job.names.length : 0) })),
+                  h(
+                    'button',
+                    { className: 'pd-jobbar-cancel', type: 'button', onClick: cancelJob },
+                    t('jobCancel'),
+                  ),
+                )
+              : null,
           ),
           tab === 'updates'
             ? null
