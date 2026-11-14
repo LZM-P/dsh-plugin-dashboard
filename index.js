@@ -3113,8 +3113,17 @@ async function listExtras(ctx) {
       else {
         try {
           row.head = await githubHead(match[1], match[2])
-          if (row.head !== null && typeof row.head.sha === 'string' && row.head.sha !== '') {
-            row.hasUpdate = installed === null || installed !== row.head.sha
+          // 只有确实读到了本地 pin 的 commit 才谈得上「有没有更新」。installedCommit()
+          // 的正则只认 codeload tarball 那一种 lockfile 写法，读到 null 是常见的
+          // （换了安装方式、lockfile 写法不同）。这时候把 head 当作可更新依据，
+          // 会让这一行每次都被判成"有新版"，一次全选就重拉一遍。
+          if (
+            installed !== null &&
+            row.head !== null &&
+            typeof row.head.sha === 'string' &&
+            row.head.sha !== ''
+          ) {
+            row.hasUpdate = installed !== row.head.sha
           }
         } catch (error) {
           row.error = error instanceof Error ? error.message : String(error)

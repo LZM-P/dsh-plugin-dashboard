@@ -157,6 +157,7 @@ window.__ModuleLoader__.load({
         updateRolledBack: 'Rolled back',
         updateFailed: 'Failed',
         updateNothing: 'Nothing to update for those packages',
+        updateUnknown: 'unknown',
         updatePartial: '{n} of {total} groups failed — the rest went through',
         updateSelectAll: 'Select all',
         viewLog: 'Last log',
@@ -315,6 +316,7 @@ window.__ModuleLoader__.load({
         updateRolledBack: '已回滚',
         updateFailed: '失败',
         updateNothing: '选中的这些包没有可更新的内容',
+        updateUnknown: '未知',
         updatePartial: '{total} 组里 {n} 组失败，其余已完成',
         updateSelectAll: '全选',
         viewLog: '上次日志',
@@ -479,7 +481,11 @@ window.__ModuleLoader__.load({
         if (row.kind === 'github') extras.push({ name, action: 'repull' });
         else if (row.kind === 'file') extras.push({ name, action: 'file-upgrade' });
         else if (row.kind === 'link') continue; // 软链没有「升级」这回事
-        else extras.push({ name, action: 'pin' });
+        else if (row.kind === 'tarball') extras.push({ name, action: 'pin' });
+        // 读不出来源（kind: 'other'）的行不猜动作：猜成 pin 会对着一个不是
+        // 压缩包地址的 spec 调 /extras，只会换来一句「不是压缩包安装的包」。
+        // 它本来也不会被勾选（服务端不给 hasUpdate），这里只是把不确定性说清楚。
+        else continue;
       }
       return { npm, extras };
     }
@@ -540,6 +546,46 @@ window.__ModuleLoader__.load({
               ? undefined
               : messageFor(failed.length, list.length),
       };
+    }
+
+    /**
+     * 把更新报告渲染成面板用的几行文本。
+     *
+     * 单独抽出来是因为这里踩过坑：`failed` 在单通道时是对象、合并后是数组，
+     * 而渲染端一律按对象读 `failed.name`，多通道部分失败时详情行变成
+     * "undefined: "，恰好把「哪个渠道挂了、为什么」这个最该说的信息丢掉。
+     * `from` 同理：extras 的结果只有 name + to，模板写死 item.from 会渲染成
+     * "b undefined → 3.0.0"。
+     *
+     * 返回 { updated: string[], failed: string[] }，每一行都已经拼好。
+     */
+    function renderUpdateReport(report, options) {
+      const unknown = options !== undefined && options !== null && typeof options.unknown === 'string'
+        ? options.unknown
+        : '?';
+      const shown = [];
+      const failedLines = [];
+      if (report === null || report === undefined || typeof report !== 'object') {
+        return { updated: shown, failed: failedLines };
+      }
+      const updated = Array.isArray(report.updated) ? report.updated : [];
+      for (const item of updated) {
+        if (item === null || typeof item !== 'object') continue;
+        const name = typeof item.name === 'string' && item.name !== '' ? item.name : unknown;
+        const to = item.to === undefined || item.to === null || item.to === '' ? unknown : String(item.to);
+        // 没有 from 时只写目标版本：编一个假的起点比不写更误导。
+        const from = item.from === undefined || item.from === null || item.from === '' ? null : String(item.from);
+        shown.push(from === null ? name + '  → ' + to : name + '  ' + from + ' → ' + to);
+      }
+      // failed 可能是数组（合并后的报告）也可能是单个对象（/updates 原样返回）。
+      const raw = Array.isArray(report.failed) ? report.failed : report.failed === undefined || report.failed === null ? [] : [report.failed];
+      for (const item of raw) {
+        if (item === null || typeof item !== 'object') continue;
+        const name = typeof item.name === 'string' && item.name !== '' ? item.name : unknown;
+        const output = item.output === undefined || item.output === null ? '' : String(item.output);
+        failedLines.push(name + ': ' + output.slice(-600));
+      }
+      return { updated: shown, failed: failedLines };
     }
 
     const CSS = [
@@ -1100,47 +1146,54 @@ window.__ModuleLoader__.load({
           if (names.length === 0) return;
           setUpdatesBusy('apply');
           setUpdateLog(null);
-          // 勾选的包分两条通道：精确版本锁定的走 POST /updates（一次 pnpm 装完），
-          // 本地压缩包 / github / 压缩包地址走 POST /extras（逐个下载校验）。
-          const plan = partitionTargets(names, extras !== null && Array.isArray(extras.rows) ? extras.rows : []);
-          // 每一条渠道各自 try/catch：request() 在 ok !== true 时抛错，如果不接住，
-          // 一个包失败会让后面的渠道一个都不跑，前面已成功的也拿不到报告。
-          const results = [];
-          if (plan.npm.length > 0) {
-            try {
-              // A registry download per package; the host serializes them under one
-              // maintenance hold, so this can legitimately outlive the default budget.
-              results.push(await request('/updates', { names: plan.npm }, { timeoutMs: WRITE_TIMEOUT_MS }));
-            } catch (error) {
-              results.push({ ok: false, name: plan.npm.join(', '), message: String(error && error.message) });
+          try {
+            // 勾选的包分两条通道：精确版本锁定的走 POST /updates（一次 pnpm 装完），
+            // 本地压缩包 / github / 压缩包地址走 POST /extras（逐个下载校验）。
+            const plan = partitionTargets(names, extras !== null && Array.isArray(extras.rows) ? extras.rows : []);
+            // 每一条渠道各自 try/catch：request() 在 ok !== true 时抛错，如果不接住，
+            // 一个包失败会让后面的渠道一个都不跑，前面已成功的也拿不到报告。
+            const results = [];
+            if (plan.npm.length > 0) {
+              try {
+                // A registry download per package; the host serializes them under one
+                // maintenance hold, so this can legitimately outlive the default budget.
+                results.push(await request('/updates', { names: plan.npm }, { timeoutMs: WRITE_TIMEOUT_MS }));
+              } catch (error) {
+                results.push({ ok: false, name: plan.npm.join(', '), message: String(error && error.message) });
+              }
             }
-          }
-          for (const item of plan.extras) {
-            try {
-              const next = await request(
-                '/extras',
-                { name: item.name, action: item.action },
-                { timeoutMs: WRITE_TIMEOUT_MS },
-              );
-              results.push({ name: item.name, ...next });
-            } catch (error) {
-              results.push({ ok: false, name: item.name, message: String(error && error.message) });
+            for (const item of plan.extras) {
+              try {
+                const next = await request(
+                  '/extras',
+                  { name: item.name, action: item.action },
+                  { timeoutMs: WRITE_TIMEOUT_MS },
+                );
+                results.push({ name: item.name, ...next });
+              } catch (error) {
+                results.push({ ok: false, name: item.name, message: String(error && error.message) });
+              }
             }
-          }
-          const merged = mergeUpdateReport(results, (n, total) => t('updatePartial', { n, total }));
-          if (merged === undefined) {
-            // 勾到的全是软链包之类的「没有升级这回事」的行：不编造报告。
-            setToast({ kind: 'warn', text: t('updateNothing') });
+            const merged = mergeUpdateReport(results, (n, total) => t('updatePartial', { n, total }));
+            if (merged === undefined) {
+              // 勾到的全是软链包之类的「没有升级这回事」的行：不编造报告。
+              setToast({ kind: 'warn', text: t('updateNothing') });
+              return;
+            }
+            setUpdateLog(merged);
+            // 全部成功才重新拉一遍：有失败时保留刚才那份报告，别立刻把它冲掉。
+            if (merged.ok === true) {
+              await load();
+              await checkUpdates();
+            }
+          } catch (error) {
+            // 兜底：流水线之外真有东西抛了，也要给用户一句话，并且不把按钮卡死。
+            setUpdateLog({ ok: false, message: String(error && error.message) });
+          } finally {
+            // 不管走哪条路径都要清掉 —— 之前把这一步写在末尾，一旦中间抛错
+            // （比如 load() 改成会抛之后）按钮就永远停在「更新中」。
             setUpdatesBusy('');
-            return;
           }
-          setUpdateLog(merged);
-          // 全部成功才重新拉一遍：有失败时保留刚才那份报告，别立刻把它冲掉。
-          if (merged.ok === true) {
-            await load();
-            await checkUpdates();
-          }
-          setUpdatesBusy('');
         }, [picked, updatesBusy, extras, load, checkUpdates, t]);
 
         const viewLog = React.useCallback(async () => {
@@ -2415,12 +2468,8 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       { className: 'pd-update-list' },
-                      updateLog.updated.map((item) =>
-                        h(
-                          'div',
-                          { key: item.name, className: 'pd-update-item' },
-                          item.name + '  ' + item.from + ' → ' + item.to,
-                        ),
+                      renderUpdateReport(updateLog, { unknown: t('updateUnknown') }).updated.map((line, index) =>
+                        h('div', { key: index, className: 'pd-update-item' }, line),
                       ),
                     )
                   : null,
@@ -2428,7 +2477,9 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       { className: 'pd-update-log-out' },
-                      String(updateLog.failed.name) + ': ' + String(updateLog.failed.output || '').slice(-600),
+                      renderUpdateReport(updateLog, { unknown: t('updateUnknown') }).failed.map((line, index) =>
+                        h('div', { key: index, className: 'pd-update-item' }, line),
+                      ),
                     )
                   : null,
               ),

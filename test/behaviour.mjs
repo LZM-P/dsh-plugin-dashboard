@@ -225,6 +225,9 @@ console.log('one update button covers both channels')
   )
   check('link packages are skipped entirely', !split.extras.some((one) => one.name === 'link-pkg'))
   check('an unknown name defaults to the npm channel', partitionTargets(['mystery'], []).npm.length === 1)
+  // kind: 'other' 的行读不出来源，不该被猜成 pin。
+  const other = partitionTargets(['other-pkg'], [{ name: 'other-pkg', kind: 'other' }])
+  check('an unreadable kind is not guessed into a pin', other.extras.length === 0 && other.npm.length === 0)
 
   // ---- 合并：一个渠道失败不能吞掉其它渠道 ----
   const mixed = mergeUpdateReport(
@@ -281,6 +284,66 @@ console.log('one update button covers both channels')
   )
   check('a thrown channel is collected, not rethrown', client.includes('results.push({ ok: false, name: item.name, message:'))
   check('the panel keeps the report when a channel failed', client.includes('if (merged.ok === true) {'))
+}
+
+console.log('the panel renders the report it was given')
+{
+  const client = readFileSync(join(root, 'client.js'), 'utf8')
+
+  function loadClientFn(name) {
+    const start = client.indexOf('    function ' + name + '(')
+    if (start === -1) throw new Error('function ' + name + ' not found in client.js')
+    let depth = 0
+    let index = client.indexOf('{', start)
+    for (; index < client.length; index += 1) {
+      const ch = client[index]
+      if (ch === '{') depth += 1
+      else if (ch === '}') {
+        depth -= 1
+        if (depth === 0) break
+      }
+    }
+    return client.slice(start, index + 1).replace(/^function\s+\w+/, 'function')
+  }
+
+  const renderUpdateReport = new Function('return (' + loadClientFn('renderUpdateReport') + ')')()
+  const opts = { unknown: 'unknown' }
+
+  // 上一版的 bug：failed 在单通道时是对象、合并后是数组，渲染端一律按对象读，
+  // 多通道失败时详情行变成 "undefined: "，把「哪个渠道挂了」整个丢掉。
+  const merged = {
+    ok: false,
+    updated: [{ name: 'npm-a', from: '1.0.0', to: '1.0.1' }],
+    failed: [{ name: 'file-pkg', output: 'checksum mismatch' }],
+    message: '1 of 2 failed',
+  }
+  const out = renderUpdateReport(merged, opts)
+  check('an array of failures renders every entry', out.failed.length === 1)
+  check('the failure line names the channel', out.failed[0] === 'file-pkg: checksum mismatch')
+  check('no literal "undefined" leaks into the failure line', !out.failed[0].includes('undefined'))
+  check('the success line keeps both versions', out.updated[0] === 'npm-a  1.0.0 → 1.0.1')
+
+  // /updates 原样返回时 failed 是单个对象，两种形状都要吃。
+  const single = { ok: false, failed: { name: 'x', output: 'boom' } }
+  check('a single failed object renders too', renderUpdateReport(single, opts).failed[0] === 'x: boom')
+
+  // extras 的结果只有 name + to，没有 from。写死 item.from 会渲染成 "b undefined → 3.0.0"。
+  const noFrom = { ok: true, updated: [{ name: 'b', to: '3.0.0' }] }
+  const noFromLine = renderUpdateReport(noFrom, opts).updated[0]
+  check('a missing from does not print undefined', !noFromLine.includes('undefined'))
+  check('a missing from omits the arrow', noFromLine === 'b  → 3.0.0')
+
+  // 名都没有的条目也不能变成 "undefined: "。
+  check(
+    'a nameless failure still renders readably',
+    renderUpdateReport({ ok: false, failed: [{ output: 'x' }] }, opts).failed[0] === 'unknown: x',
+  )
+  check('an empty report renders nothing', renderUpdateReport(null, opts).failed.length === 0)
+  check('garbage entries are skipped', renderUpdateReport({ updated: [null, 5] }, opts).updated.length === 0)
+
+  // 渲染端必须真的用这个函数，而不是又退回手写模板。
+  check('the panel renders through renderUpdateReport', /renderUpdateReport\(updateLog/.test(client))
+  check('the old single-object assumption is gone', !client.includes('String(updateLog.failed.name)'))
 }
 
 console.log('write gate')
