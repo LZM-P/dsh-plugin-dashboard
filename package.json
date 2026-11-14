@@ -40,12 +40,11 @@
     "icon.svg",
     "LICENSE",
     "README.md",
-    "test/self-check.mjs",
-    "test/job-background.mjs"
+    "test/*.mjs"
   ],
   "scripts": {
     "check": "node test/self-check.mjs",
-    "test": "node test/job-background.mjs"
+    "test": "node test/self-check.mjs && node test/job-background.mjs && node test/download.mjs"
   },
   "dsh": {
     "manifestVersion": 1,

@@ -52,12 +52,16 @@
  * overrides this plugin created are ever removed — so the user can switch
  * plugins off and restart once instead of waiting for a reload per plugin.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { spawn } from 'node:child_process'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { connect as netConnect } from 'node:net'
+import { connect as tlsConnect } from 'node:tls'
 import { createRequire } from 'node:module'
 
 const ROUTE_PREFIX = '/api/dsh-plugin-rack'
@@ -1389,7 +1393,7 @@ async function npmLatest(name, base) {
   const errors = []
   for (const root of roots) {
     try {
-      const response = await fetch(`${root}${encoded}/latest`, {
+      const response = await fetchAny(`${root}${encoded}/latest`, {
         signal: AbortSignal.timeout(REGISTRY_TIMEOUT),
         headers: { accept: 'application/json' },
       })
@@ -1975,7 +1979,7 @@ function githubHeaders() {
 }
 
 async function githubHead(owner, repo) {
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=1`, {
+  const response = await fetchAny(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=1`, {
     signal: AbortSignal.timeout(12000),
     headers: githubHeaders(),
   })
@@ -1996,7 +2000,7 @@ async function githubHead(owner, repo) {
  * from. Returns null when the repository publishes no releases at all.
  */
 async function githubLatestRelease(owner, repo) {
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`, {
+  const response = await fetchAny(`https://api.github.com/repos/${owner}/${repo}/releases/latest`, {
     signal: AbortSignal.timeout(12000),
     headers: githubHeaders(),
   })
@@ -2020,7 +2024,7 @@ async function githubLatestRelease(owner, repo) {
  * Returns null when no tag parses as a version.
  */
 async function githubLatestTag(owner, repo) {
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/tags?per_page=100`, {
+  const response = await fetchAny(`https://api.github.com/repos/${owner}/${repo}/tags?per_page=100`, {
     signal: AbortSignal.timeout(12000),
     headers: githubHeaders(),
   })
@@ -2073,7 +2077,7 @@ async function githubBestVersion(owner, repo) {
  * and the API answers 404 for those, so an empty list is a normal answer.
  */
 async function githubReleaseAssets(owner, repo, tag) {
-  const response = await fetch(
+  const response = await fetchAny(
     `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`,
     { signal: AbortSignal.timeout(REGISTRY_TIMEOUT), headers: githubHeaders() },
   )
@@ -2134,52 +2138,456 @@ function sha256OfFile(path) {
  * 12m for 30 MB). The stall timer is the real guard against a dead socket; this
  * one only stops an endless trickle.
  */
-const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000
-/** No byte for this long means the connection is dead, not slow. */
-const DOWNLOAD_STALL_MS = 30 * 1000
+// ---- download transport ---------------------------------------------------
+// The asset has to arrive over whatever network the user actually has: a plain
+// connection, a corporate HTTP proxy, a local SOCKS5 client (Clash / v2ray), or
+// one that comes and goes. So every attempt is resumable, the routes are tried
+// from most to least likely, and a route that cannot reach the host falls
+// through to the next one instead of failing the whole update.
 
-async function downloadFile(url, dest, outer) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new Error('下载超过 30 分钟，已放弃')), DOWNLOAD_TIMEOUT_MS)
-  const onOuterAbort = () => controller.abort(outer !== undefined && outer !== null ? outer.reason : new Error('cancelled'))
-  if (outer !== undefined && outer !== null) {
-    if (outer.aborted) controller.abort(outer.reason)
-    else outer.addEventListener('abort', onOuterAbort, { once: true })
+const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000
+const DOWNLOAD_STALL_MS = 30 * 1000
+const DOWNLOAD_TRIES = 3
+const DOWNLOAD_REDIRECTS = 5
+const DOWNLOAD_CONNECT_MS = 20 * 1000
+
+/** "host:port", "http://host:port", "socks5://user:pass@host:port" -> route. */
+function parseProxy(value) {
+  if (typeof value !== 'string') return null
+  let text = value.trim()
+  if (text === '') return null
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = 'http://' + text
+  let parsed
+  try {
+    parsed = new URL(text)
+  } catch (error) {
+    void error
+    return null
   }
-  let stall = null
-  const touch = () => {
-    if (stall !== null) clearTimeout(stall)
-    stall = setTimeout(() => controller.abort(new Error('下载卡住：30 秒没有收到数据')), DOWNLOAD_STALL_MS)
+  const protocol = parsed.protocol.toLowerCase()
+  const kind =
+    protocol === 'socks5:' || protocol === 'socks5h:' || protocol === 'socks4:'
+      ? 'socks'
+      : protocol === 'http:' || protocol === 'https:'
+        ? 'http'
+        : null
+  if (kind === null) return null
+  const port = Number(parsed.port === '' ? (kind === 'http' ? 80 : 1080) : parsed.port)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null
+  if (parsed.hostname === '') return null
+  const auth =
+    parsed.username === ''
+      ? null
+      : { user: decodeURIComponent(parsed.username), pass: decodeURIComponent(parsed.password ?? '') }
+  return { kind, protocol, host: parsed.hostname, port, auth, label: parsed.hostname + ':' + port }
+}
+
+function noProxyMatch(host, raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return false
+  for (const entry of raw.split(',')) {
+    const one = entry.trim().toLowerCase()
+    if (one === '') continue
+    if (one === '*') return true
+    const bare = one.startsWith('.') ? one.slice(1) : one
+    const name = host.toLowerCase()
+    if (name === bare || name.endsWith('.' + bare)) return true
+  }
+  return false
+}
+
+/** The proxy Windows itself is configured with, when there is one. */
+function systemProxyRoute() {
+  if (process.platform !== 'win32') return null
+  try {
+    const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
+    const query = spawnSync('reg', ['query', key, '/v', 'ProxyServer'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      windowsHide: true,
+    })
+    if (query.status !== 0 || typeof query.stdout !== 'string') return null
+    const match = /ProxyServer\s+REG_SZ\s+(.+)/.exec(query.stdout)
+    if (match === null) return null
+    const parts = match[1]
+      .trim()
+      .split(';')
+      .map(one => one.trim())
+      .filter(one => one !== '')
+    const httpsPart = parts.find(one => one.toLowerCase().startsWith('https='))
+    const httpPart = parts.find(one => one.toLowerCase().startsWith('http='))
+    const chosen = (httpsPart ?? httpPart ?? parts[0] ?? '').replace(/^[a-z]+=/i, '')
+    return parseProxy(chosen)
+  } catch (error) {
+    void error
+    return null
+  }
+}
+
+/**
+ * Where to try, in order: an explicit choice from config.json, then the
+ * environment, then the system proxy, then the plain connection. NO_PROXY and an
+ * unreachable proxy both degrade to the next entry instead of failing.
+ */
+function downloadRoutes(url) {
+  const target = url instanceof URL ? url : new URL(url)
+  const routes = []
+  const add = (label, route) => {
+    if (route !== null && routes.some(one => one.route !== null && one.route.host === route.host && one.route.port === route.port)) return
+    routes.push({ label, route })
+  }
+  let mode = 'auto'
+  try {
+    const parsed = JSON.parse(readFileSync(join(stateDir(), 'config.json'), 'utf8'))
+    const download = parsed !== null && typeof parsed === 'object' && parsed.download !== null && typeof parsed.download === 'object' ? parsed.download : null
+    if (download !== null && typeof download.proxy === 'string' && download.proxy.trim() !== '') mode = download.proxy.trim()
+  } catch (error) {
+    void error
+  }
+  if (mode === 'off' || mode === 'direct' || mode === 'none') {
+    add('direct', null)
+    return routes
+  }
+  const skip = noProxyMatch(target.hostname, process.env.NO_PROXY ?? process.env.no_proxy)
+  if (mode !== 'auto') {
+    const explicit = parseProxy(mode)
+    if (explicit !== null && !skip) add(explicit.label, explicit)
+  } else {
+    const env =
+      process.env.HTTPS_PROXY ??
+      process.env.https_proxy ??
+      process.env.ALL_PROXY ??
+      process.env.all_proxy ??
+      process.env.HTTP_PROXY ??
+      process.env.http_proxy
+    const fromEnv = parseProxy(env ?? '')
+    if (fromEnv !== null && !skip) add(fromEnv.label, fromEnv)
+    const system = systemProxyRoute()
+    if (system !== null && !skip) add(system.label, system)
+  }
+  add('direct', null)
+  return routes
+}
+
+function connectTcp(host, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect({ host, port })
+    const timer = setTimeout(() => {
+      socket.destroy()
+      reject(new Error('连接 ' + host + ':' + port + ' 超时'))
+    }, timeoutMs)
+    socket.once('error', error => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    socket.once('connect', () => {
+      clearTimeout(timer)
+      socket.removeAllListeners('error')
+      socket.on('error', () => {})
+      resolve(socket)
+    })
+  })
+}
+
+/** Read up to the blank line, leaving any extra bytes on the socket. */
+function readHead(socket, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let text = ''
+    let done = false
+    const finish = (error, head, rest) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      socket.removeListener('data', onData)
+      socket.removeListener('error', onError)
+      socket.removeListener('close', onClose)
+      if (error !== null) {
+        socket.destroy()
+        reject(error)
+        return
+      }
+      if (rest !== undefined && rest.length > 0) socket.unshift(rest)
+      resolve(head)
+    }
+    const timer = setTimeout(() => finish(new Error('代理没有回应')), timeoutMs)
+    const onData = chunk => {
+      text += chunk.toString('utf8')
+      const end = text.indexOf('\r\n\r\n')
+      if (end < 0) {
+        if (text.length > 65536) finish(new Error('代理响应异常'))
+        return
+      }
+      finish(null, text.slice(0, end), Buffer.from(text.slice(end + 4), 'utf8'))
+    }
+    const onError = error => finish(error)
+    const onClose = () => finish(new Error('代理断开了连接'))
+    socket.on('data', onData)
+    socket.once('error', onError)
+    socket.once('close', onClose)
+  })
+}
+
+/** Read exactly `count` bytes of a SOCKS5 reply, leaving the rest on the socket. */
+function readSocks(socket, count, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let buffer = Buffer.alloc(0)
+    let done = false
+    const finish = (error, all) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      socket.removeListener('data', onData)
+      socket.removeListener('error', onError)
+      if (error !== null) {
+        socket.destroy()
+        reject(error)
+        return
+      }
+      if (all.length > count) socket.unshift(all.subarray(count))
+      resolve(all.subarray(0, count))
+    }
+    const timer = setTimeout(() => finish(new Error('SOCKS 代理没有回应')), timeoutMs)
+    const onData = chunk => {
+      buffer = Buffer.concat([buffer, chunk])
+      if (buffer.length >= count) finish(null, buffer)
+    }
+    const onError = error => finish(error)
+    socket.on('data', onData)
+    socket.once('error', onError)
+  })
+}
+
+async function socksOpen(socket, route, host, port) {
+  socket.write(route.auth === null ? Buffer.from([0x05, 0x01, 0x00]) : Buffer.from([0x05, 0x02, 0x00, 0x02]))
+  const pick = await readSocks(socket, 2, DOWNLOAD_CONNECT_MS)
+  if (pick[0] !== 0x05) throw new Error('代理不是 SOCKS5')
+  if (pick[1] === 0xff) throw new Error('代理不接受可用的认证方式')
+  if (pick[1] === 0x02) {
+    if (route.auth === null) throw new Error('代理要求用户名和密码')
+    const user = Buffer.from(route.auth.user, 'utf8')
+    const pass = Buffer.from(route.auth.pass, 'utf8')
+    socket.write(Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]))
+    const answer = await readSocks(socket, 2, DOWNLOAD_CONNECT_MS)
+    if (answer[1] !== 0x00) throw new Error('代理拒绝了用户名和密码')
+  }
+  const name = Buffer.from(host, 'utf8')
+  socket.write(
+    Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, name.length]), name, Buffer.from([port >> 8, port & 0xff])]),
+  )
+  const reply = await readSocks(socket, 4, DOWNLOAD_CONNECT_MS)
+  if (reply[1] !== 0x00) throw new Error('代理拒绝连到目标主机 (' + reply[1] + ')')
+  if (reply[3] === 0x01) await readSocks(socket, 6, DOWNLOAD_CONNECT_MS)
+  else if (reply[3] === 0x04) await readSocks(socket, 18, DOWNLOAD_CONNECT_MS)
+  else if (reply[3] === 0x03) {
+    const length = await readSocks(socket, 1, DOWNLOAD_CONNECT_MS)
+    await readSocks(socket, length[0] + 2, DOWNLOAD_CONNECT_MS)
+  }
+}
+
+/** A socket that already speaks to `host:port`, through the proxy or directly. */
+async function openTunnel(route, host, port) {
+  const socket = await connectTcp(route.host, route.port, DOWNLOAD_CONNECT_MS)
+  try {
+    if (route.kind === 'socks') {
+      await socksOpen(socket, route, host, port)
+      return socket
+    }
+    const auth =
+      route.auth === null
+        ? ''
+        : 'Proxy-Authorization: Basic ' +
+          Buffer.from(route.auth.user + ':' + route.auth.pass).toString('base64') +
+          '\r\n'
+    socket.write(
+      'CONNECT ' + host + ':' + port + ' HTTP/1.1\r\nHost: ' + host + ':' + port + '\r\n' + auth + '\r\n',
+    )
+    const head = await readHead(socket, DOWNLOAD_CONNECT_MS)
+    const status = Number((head.split('\r\n')[0] ?? '').split(' ')[1] ?? 0)
+    if (status !== 200) throw new Error('代理拒绝建立隧道 (' + status + ')')
+    return socket
+  } catch (error) {
+    socket.destroy()
+    throw error
+  }
+}
+
+function openStream(route, url, offset, signal) {
+  const isTls = url.protocol === 'https:'
+  const port = Number(url.port === '' ? (isTls ? 443 : 80) : url.port)
+  const headers = { ...githubHeaders(), 'accept-encoding': 'identity' }
+  if (offset > 0) headers.range = 'bytes=' + offset + '-'
+  return new Promise((resolve, reject) => {
+    const start = async () => {
+      let socket = null
+      if (route !== null) socket = await openTunnel(route, url.hostname, port)
+      const options = {
+        method: 'GET',
+        host: url.hostname,
+        port,
+        path: url.pathname + url.search,
+        headers,
+      }
+      if (signal !== undefined && signal !== null) options.signal = signal
+      if (socket !== null && isTls) {
+        const secure = tlsConnect({ socket, servername: url.hostname })
+        await new Promise((resolveHandshake, rejectHandshake) => {
+          secure.once('secureConnect', resolveHandshake)
+          secure.once('error', rejectHandshake)
+        })
+        options.createConnection = () => secure
+      } else if (socket !== null) {
+        options.createConnection = () => socket
+      }
+      const request = (isTls ? httpsRequest : httpRequest)(options, response => resolve(response))
+      request.on('error', reject)
+      request.end()
+    }
+    start().catch(reject)
+  })
+}
+
+async function pipeTo(part, response, signal, offset, deadline) {
+  const stream = createWriteStream(part, { flags: offset > 0 ? 'a' : 'w' })
+  let idle = null
+  const arm = () => {
+    if (idle !== null) clearTimeout(idle)
+    idle = setTimeout(
+      () => response.destroy(new Error('下载卡住：' + Math.round(DOWNLOAD_STALL_MS / 1000) + ' 秒没有收到数据')),
+      DOWNLOAD_STALL_MS,
+    )
+  }
+  const onAbort = () => response.destroy(new Error('cancelled'))
+  if (signal !== undefined && signal !== null) {
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
   }
   try {
-    touch()
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: githubHeaders(),
-      redirect: 'follow',
+    arm()
+    for await (const chunk of response) {
+      if (Date.now() >= deadline) response.destroy(new Error('下载超过 ' + Math.round(DOWNLOAD_TIMEOUT_MS / 60000) + ' 分钟，已放弃'))
+      arm()
+      stream.write(chunk)
+    }
+    await new Promise((resolve, reject) => {
+      stream.once('error', reject)
+      stream.end(() => resolve(undefined))
     })
-    if (!response.ok) throw new Error(`download answered ${response.status}`)
-    if (response.body === null) throw new Error('download returned no body')
-    const reader = response.body.getReader()
+  } finally {
+    if (idle !== null) clearTimeout(idle)
+    if (signal !== undefined && signal !== null) signal.removeEventListener('abort', onAbort)
+    stream.destroy()
+  }
+}
+
+async function fetchToFile(url, part, route, signal, deadline) {
+  let target = url instanceof URL ? url : new URL(url)
+  for (let hop = 0; hop <= DOWNLOAD_REDIRECTS; hop += 1) {
+    const offset = existsSync(part) ? statSync(part).size : 0
+    const response = await openStream(route, target, offset, signal)
+    const status = response.statusCode ?? 0
+    if (status >= 300 && status < 400 && typeof response.headers.location === 'string' && response.headers.location !== '') {
+      response.resume()
+      target = new URL(response.headers.location, target)
+      continue
+    }
+    if (status !== 200 && status !== 206) {
+      response.resume()
+      throw new Error('下载被拒绝 (' + status + ')')
+    }
+    await pipeTo(part, response, signal, status === 206 ? offset : 0, deadline)
+    return statSync(part).size
+  }
+  throw new Error('重定向次数过多')
+}
+
+/**
+ * Download `url` into `dest`, resuming whatever the last attempt left behind.
+ *
+ * `dest.part` is the working file: an interrupted run keeps it, so the next
+ * attempt — or the next click, minutes later — asks for the remaining bytes with
+ * a Range header instead of starting the whole thing over.
+ */
+/** Exported for test/download.mjs; the host calls it through applyFileUpgrade. */
+/**
+ * Fetch that survives a proxy-only network.
+ *
+ * Node's global fetch ignores every proxy setting, which is fine for a normal
+ * connection and useless behind a corporate proxy or a local Clash/v2ray client.
+ * So a failed fetch is retried over the same routes the asset downloader knows:
+ * explicit config, environment, system proxy, then a direct socket.
+ */
+async function readResponseLike(target, route, signal) {
+  let current = target
+  for (let hop = 0; hop <= 3; hop += 1) {
+    const response = await openStream(route, current, 0, signal)
+    const status = response.statusCode ?? 0
+    if (status >= 300 && status < 400 && typeof response.headers.location === 'string' && response.headers.location !== '') {
+      response.resume()
+      current = new URL(response.headers.location, current)
+      continue
+    }
     const chunks = []
     let total = 0
-    for (;;) {
-      touch()
-      const step = await reader.read()
-      if (step.done) break
-      if (step.value !== undefined && step.value !== null) {
-        chunks.push(Buffer.from(step.value))
-        total += step.value.byteLength
+    for await (const chunk of response) {
+      total += chunk.length
+      if (total > 8 * 1024 * 1024) {
+        response.destroy()
+        throw new Error('响应超过 8 MB')
+      }
+      chunks.push(chunk)
+    }
+    const body = Buffer.concat(chunks, total).toString('utf8')
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => body,
+      json: async () => JSON.parse(body),
+    }
+  }
+  throw new Error('重定向次数过多')
+}
+
+/** Exported for test/download.mjs, like downloadFile. */
+export async function fetchAny(url, init) {
+  try {
+    return await fetch(url, init)
+  } catch (error) {
+    const target = new URL(url)
+    const signal = init !== undefined && init !== null ? init.signal : undefined
+    const routes = downloadRoutes(target)
+    for (const route of routes) {
+      try {
+        return await readResponseLike(target, route.route, signal)
+      } catch (next) {
+              }
+    }
+    throw error
+  }
+}
+
+export async function downloadFile(url, dest, outer) {
+  const part = dest + '.part'
+  const deadline = Date.now() + DOWNLOAD_TIMEOUT_MS
+  const routes = downloadRoutes(url)
+  let lastError = null
+  for (const route of routes) {
+    for (let attempt = 1; attempt <= DOWNLOAD_TRIES; attempt += 1) {
+      if (Date.now() >= deadline) throw new Error('下载超过 ' + Math.round(DOWNLOAD_TIMEOUT_MS / 60000) + ' 分钟，已放弃')
+      if (outer !== undefined && outer !== null && outer.aborted) throw new Error('cancelled')
+      try {
+        const bytes = await fetchToFile(url, part, route.route, outer, deadline)
+        if (bytes === 0) throw new Error('下载得到空文件')
+        renameSync(part, dest)
+        return bytes
+      } catch (error) {
+        if (outer !== undefined && outer !== null && outer.aborted) throw error
+        lastError = new Error((route.label === 'direct' ? '' : route.label + ': ') + (error instanceof Error ? error.message : String(error)))
+        // Nothing arrived over this route: no point retrying it, try the next.
+        if (!existsSync(part) || statSync(part).size === 0) break
+        await new Promise(resolve => setTimeout(resolve, 800 * attempt))
       }
     }
-    if (total === 0) throw new Error('download returned an empty body')
-    writeFileSync(dest, Buffer.concat(chunks, total))
-    return total
-  } finally {
-    clearTimeout(timer)
-    if (stall !== null) clearTimeout(stall)
-    if (outer !== undefined && outer !== null) outer.removeEventListener('abort', onOuterAbort)
   }
+  throw lastError ?? new Error('下载失败')
 }
 /**
  * owner/repo of an installed package, read from the `repository` field of the
@@ -2360,7 +2768,7 @@ async function planFileUpgrade(ctx, name) {
   if (sums === undefined) {
     return { ok: false, message: `${release.tag} 没有提供 SHA256SUMS，无法校验，已拒绝自动升级` }
   }
-  const response = await fetch(sums.url, {
+  const response = await fetchAny(sums.url, {
     signal: AbortSignal.timeout(REGISTRY_TIMEOUT),
     headers: githubHeaders(),
     redirect: 'follow',
@@ -2459,8 +2867,13 @@ async function applyFileUpgrade(ctx, name) {
       renameSync(partial, target)
     }
   } catch (error) {
+    // A cancelled run keeps the resume file: the next click finishes it instead
+    // of fetching 30 MB again. Any other failure starts clean.
+    const cancelled = error instanceof Error && /cancel/i.test(error.message)
     try {
       if (existsSync(partial)) unlinkSync(partial)
+      const resume = partial + '.part'
+      if (!cancelled && existsSync(resume)) unlinkSync(resume)
     } catch {
       // Best effort: a stray .part is inert.
     }
