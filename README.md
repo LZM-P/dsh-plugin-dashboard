@@ -71,13 +71,26 @@ node test/self-check.mjs
 
 ## 安装
 
-在 DSH 的插件管理界面里安装，或者：
+在 DSH 里装有三条路，任选其一：
+
+**① 从 GitHub 装（推荐，不依赖 npm）**
+
+```bash
+dsh plugin add github:LZM-P/dsh-plugin-dashboard
+```
+
+**② 从 npm 装（发布后可用）**
 
 ```bash
 dsh plugin add dsh-plugin-rack
 ```
 
+**③ 在插件管理界面里点「安装」**，把上面任意一条的 spec 填进去。
+
 装好后侧边栏会出现「插件管理」。
+
+> 如果宿主版本不认 `github:` 前缀，改用 tarball 地址：
+> `dsh plugin add https://github.com/LZM-P/dsh-plugin-dashboard/archive/refs/heads/main.tar.gz`
 
 ## 数据放在哪
 
