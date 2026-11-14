@@ -117,7 +117,6 @@ window.__ModuleLoader__.load({
         uninstallUnavailable: 'Could not load the uninstallable list',
         uninstallTitle: 'Uninstall this plugin (click again to confirm)',
         installTitle: 'Install',
-        installHint: 'Type a package name and check it first — nothing is installed until you press Install.',
         installSpecPlaceholder: 'package name, e.g. dsh-better-sidebar',
         installCheck: 'Check',
         installRun: 'Install',
@@ -134,8 +133,6 @@ window.__ModuleLoader__.load({
         tabUpdates: 'Updates',
         checkUpdates: 'Check for updates',
         updateAll: 'Update all',
-        updatePreview: 'Will run:',
-        updateHint: 'Only packages pinned to an exact version in this profile are updated.',
         updateNone: 'Everything is up to date',
         updateIdle: 'Not checked yet — pick “Check for updates”',
         extrasTitle: 'Other install kinds',
@@ -177,8 +174,6 @@ window.__ModuleLoader__.load({
         updateRolledBack: 'Rolled back',
         updateFailed: 'Failed',
         updateSelectAll: 'Select all',
-        updateBatchHint: 'One pnpm pass installs every picked package; any failure rolls all of them back.',
-        updateAllowHint: 'New versions are whitelisted for the supply-chain age policy automatically.',
         viewLog: 'Last log',
         logEmpty: 'No update log yet',
         logPath: 'Log file',
@@ -295,7 +290,6 @@ window.__ModuleLoader__.load({
         uninstallUnavailable: '拿不到可卸载列表',
         uninstallTitle: '卸载这个插件（再点一下确认）',
         installTitle: '安装',
-        installHint: '先输包名点「检查」看看到底是什么，确认了再点「安装」——不点安装不会动任何东西。',
         installSpecPlaceholder: '包名，例如 dsh-better-sidebar',
         installCheck: '检查',
         installRun: '安装',
@@ -312,8 +306,6 @@ window.__ModuleLoader__.load({
         tabUpdates: '更新',
         checkUpdates: '检查更新',
         updateAll: '全部更新',
-        updatePreview: '将执行：',
-        updateHint: '只升级本 profile 里按精确版本锁定的包。',
         updateNone: '已经是最新版本',
         updateIdle: '还没检查过，点「检查更新」看有没有新版本',
         extrasTitle: '其他安装方式',
@@ -355,8 +347,6 @@ window.__ModuleLoader__.load({
         updateRolledBack: '已回滚',
         updateFailed: '失败',
         updateSelectAll: '全选',
-        updateBatchHint: '一次 pnpm 装完所有勾选的包；任何一个失败会整体回滚。',
-        updateAllowHint: '新版本会自动补进 pnpm 的供应链版本白名单。',
         viewLog: '上次日志',
         logEmpty: '还没有更新日志',
         logPath: '日志文件',
@@ -2380,7 +2370,6 @@ window.__ModuleLoader__.load({
               installBusy === 'install' ? t('installRunning') : t('installRun'),
             ),
           ),
-          h('div', { className: 'pd-hint' }, t('installHint')),
           installInfo === null
             ? null
             : installInfo.ok === true
@@ -2485,32 +2474,7 @@ window.__ModuleLoader__.load({
               { type: 'button', className: 'pd-btn', onClick: viewLog },
               t('viewLog'),
             ),
-            h(
-              'span',
-              { className: 'pd-hint' },
-              t('updateHint') + ' ' + t('updateBatchHint') + ' ' + t('updateAllowHint'),
-            ),
           ),
-          // 更新前先把要跑的整条命令摆出来，省得「点了之后才发现装了什么」。
-          pickedNames.length === 0
-            ? null
-            : h(
-                'div',
-                { className: 'pd-hint pd-cmd' },
-                t('updatePreview') +
-                  ' pnpm add ' +
-                  pickedNames
-                    .slice(0, 4)
-                    .map((name) => {
-                      const found = (updates && Array.isArray(updates.rows) ? updates.rows : []).find(
-                        (item) => item.name === name,
-                      );
-                      return name + '@' + String(found && found.latest ? found.latest : '?');
-                    })
-                    .join(' ') +
-                  (pickedNames.length > 4 ? ' …' : '') +
-                  ' --save-exact --prefer-offline',
-              ),
           logText === null
             ? null
             : h(
