@@ -167,6 +167,7 @@ window.__ModuleLoader__.load({
         hasNewVersion: 'Update available',
         updateNow: 'Update just this plugin',
         jobRunning: 'Host is updating in the background · {n} plugins',
+        jobRollingBack: 'Rolling back — this cannot be cancelled',
         jobDone: 'Background update finished',
         jobFailed: 'Background update failed',
         jobInterrupted: 'The last update never finished (host restarted or interrupted)',
@@ -343,6 +344,7 @@ window.__ModuleLoader__.load({
         hasNewVersion: '有新版',
         updateNow: '只更新这一个插件',
         jobRunning: '宿主正在后台更新 · {n} 个插件',
+        jobRollingBack: '正在回滚，这一步不能取消',
         jobDone: '后台更新已完成',
         jobFailed: '后台更新失败',
         jobInterrupted: '上次更新没跑完（宿主重启或中断）',
@@ -2613,12 +2615,23 @@ window.__ModuleLoader__.load({
                   'div',
                   { className: 'pd-jobbar' },
                   h('span', { className: 'pd-spin' }),
-                  h('span', null, t('jobRunning', { n: String(Array.isArray(job.names) ? job.names.length : 0) })),
                   h(
-                    'button',
-                    { className: 'pd-jobbar-cancel', type: 'button', onClick: cancelJob },
-                    t('jobCancel'),
+                    'span',
+                    null,
+                    job.stage === 'rollback'
+                      ? t('jobRollingBack')
+                      : t('jobRunning', { n: String(Array.isArray(job.names) ? job.names.length : 0) }),
                   ),
+                  // 服务端判断这个任务此刻能不能取消。回滚阶段是唯一必须跑完的
+                  // 一段，client 不能靠 job.running 自己猜——那样回滚时按钮还在，
+                  // 再点一次会把回滚用的 pnpm install 也杀掉。
+                  job.cancelable === false
+                    ? null
+                    : h(
+                        'button',
+                        { className: 'pd-jobbar-cancel', type: 'button', onClick: cancelJob },
+                        t('jobCancel'),
+                      ),
                 )
               : queued.length > 0
                 ? h(

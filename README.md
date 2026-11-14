@@ -101,8 +101,23 @@ dsh plugin add dsh-plugin-rack
 ## 数据放在哪
 
 - 代码：插件自己的安装目录。
-- 运行时数据：`<DSH_HOME>/plugin-rack/profiles/<profile>/state.json`（Windows 默认 `C:\Users\<你>\.dsh\plugin-rack\profiles\desktop\state.json`）—— 只存「哪些插件被标成了自动」和「面板自己创建过哪些配置覆盖」，几行 JSON。删掉它只会让自动清单重置，**不影响任何插件**。写盘失败时退化为内存态，页面会标注。
-- **每个 profile 各存一份**：同一个 DSH 下开多个 profile 时，自动清单、正在跑的任务、待装队列互不串台；第一次升级到这个版本会把旧的 `plugin-rack/state.json` 复制过来一次。
+- 运行时数据目录：`<DSH_HOME>/plugin-rack/profiles/<profile>/`（Windows 默认 `C:\Users\<你>\.dsh\plugin-rack\profiles\desktop\`）。一个 profile 一个目录，里面是：
+  - `state.json` —— 「哪些插件被标成了自动」和「面板自己创建过哪些配置覆盖」，几行 JSON。删掉只会让自动清单重置，**不影响任何插件**。
+  - `job.json` —— 正在跑或上一次跑完的更新任务，面板关掉再打开靠它接回来。
+  - `queue.json` —— 已下载校验、等会话空闲才装的更新。
+  - `config.json` —— 下载代理等手工配置。
+  - `last-update.log` / `update-log.jsonl` —— 最近一次更新的完整日志 + 每次更新的追加历史。
+- **每个 profile 各存一份**：同一个 DSH 下开多个 profile 时，自动清单、正在跑的任务、待装队列、代理配置互不串台。
+
+### 从旧版本升级（单一目录 → 按 profile 分目录）
+
+早期版本把所有东西都放在 `<DSH_HOME>/plugin-rack/` 这一个目录里。升级后第一次启动时，上面这些文件会**逐个复制**到按 profile 分的目录（已存在的不覆盖，旧文件保留不删）：
+
+- 排好队还没装的更新会跟过来，不会静默丢失；
+- 手工配的下载代理继续生效，不用重配；
+- 任务历史与更新日志都能在面板里看到。
+
+如果旧目录里的文件已经被你手动删掉，那这几项就按新装处理（队列空、代理回落到环境变量、历史为空），不影响插件本身。
 
 ## 结构
 

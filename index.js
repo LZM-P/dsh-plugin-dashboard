@@ -126,7 +126,30 @@ function stateDir() {
   return profileStateKey === null ? stateBase() : join(stateBase(), 'profiles', profileStateKey)
 }
 
-/** Key the state by the profile it belongs to; carry the old roster over once. */
+/**
+ * Key the state by the profile it belongs to, and carry the legacy single
+ * directory over once.
+ *
+ * The first version of this migration only moved `state.json`, which split one
+ * directory into two halves: the roster moved while job.json / queue.json /
+ * config.json / the update logs stayed behind. A user upgrading across that
+ * release lost a queued update (silently — nothing told them it was dropped),
+ * their configured download proxy, and the history of past runs. Everything
+ * this plugin owns lives in stateBase(), so everything moves together.
+ *
+ * Copy is per-file and non-destructive: the old files are left in place, so a
+ * machine that runs two profiles against an upgraded build still has one copy
+ * of the shared history to fall back on.
+ */
+const LEGACY_CARRY_OVER = [
+  'state.json',
+  'job.json',
+  'queue.json',
+  'config.json',
+  'last-update.log',
+  'update-log.jsonl',
+]
+
 function adoptProfile(ctx) {
   let dir = null
   try {
@@ -139,15 +162,21 @@ function adoptProfile(ctx) {
   const key = basename(dir).replace(/[^A-Za-z0-9._-]+/g, '-')
   if (key === '' || key === '.' || key === '..') return
   profileStateKey = key
-  try {
-    const target = join(stateDir(), 'state.json')
-    const legacy = join(stateBase(), 'state.json')
-    if (!existsSync(target) && existsSync(legacy)) {
+  for (const name of LEGACY_CARRY_OVER) {
+    try {
+      const target = join(stateDir(), name)
+      const legacy = join(stateBase(), name)
+      // Only ever fill a gap: a file that already exists in the profile's own
+      // directory is newer than the shared copy by definition.
+      if (existsSync(target)) continue
+      if (!existsSync(legacy)) continue
       mkdirSync(stateDir(), { recursive: true })
       writeFileSync(target, readFileSync(legacy))
+    } catch {
+      // Losing one carry-over file is survivable: the roster reseeds, the job
+      // page reports "no run", the queue starts empty and the proxy falls back
+      // to the environment. Losing the whole migration is survivable too.
     }
-  } catch {
-    // Losing the carry-over is survivable: the roster reseeds itself.
   }
 }
 
@@ -288,12 +317,19 @@ function endJob(job, result) {
 function cancelJob() {
   const job = activeJob
   if (job === null) return { ok: false, message: 'no update is running' }
+  // 回滚本身也是一次 pnpm 运行（install 重同步）。这时候再点取消会把它杀掉，
+  // 留下半同步的 node_modules —— 比不回滚更糟。回滚必须跑完。
+  if (job.stage === 'rollback') {
+    return { ok: true, job: jobStatus() }
+  }
   job.cancelled = true
   const killedPnpm = activePnpmChild !== null
   if (activePnpmChild !== null) {
     killTree(activePnpmChild)
     activePnpmChild = null
   }
+  // 先 abort 再决定是否 endJob：abort 必须在任何可能把 activeJobAbort 置空的
+  // 路径之前发生，否则还在跑的 applyUpdates 读到 null 会以为什么都没发生。
   if (activeJobAbort !== null) activeJobAbort.abort(new Error('cancelled by the user'))
   if (killedPnpm) {
     // endJob runs from the failed install's rollback path; until then the job
@@ -308,12 +344,25 @@ function cancelJob() {
   return { ok: true, job: jobStatus() }
 }
 
+/** 这个任务是否已被取消。job 对象是取消事实的唯一来源，全局量只是它的镜像。 */
+function jobCancelled(job) {
+  return job !== null && job !== undefined && job.cancelled === true
+}
+
+/** 取消检查：任务被取消，或它自己的 abort 信号已触发，都算。 */
+function assertNotCancelled(job) {
+  if (jobCancelled(job)) throw new Error('cancelled by the user')
+  if (activeJobAbort !== null && activeJobAbort.signal.aborted) throw new Error('cancelled by the user')
+}
+
 /** 正在跑的任务，或上一次的结果；finishedAt 为空但已不在跑 = 被宿主重启掐断了。 */
 function jobStatus() {
   const job = activeJob !== null ? activeJob : readJob()
   if (job === null) return null
   const running = activeJob !== null && activeJob.id === job.id
-  return Object.assign({}, job, { running, cancelable: running, interrupted: !running && job.finishedAt === null })
+  // 回滚期间不接受取消：那是唯一一段「后台必须跑完」的工作。
+  const cancelable = running && job.stage !== 'rollback'
+  return Object.assign({}, job, { running, cancelable, interrupted: !running && job.finishedAt === null })
 }
 
 function emptyRoster() {
@@ -369,12 +418,40 @@ function persistRoster() {
 }
 
 /** A readable label for a module name, shortening `file:///...` install specs. */
+/**
+ * Human-readable package name for a loader module specifier.
+ *
+ * A `file://` URL is a path inside some node_modules tree, so the package name
+ * is the segment right after the LAST `node_modules/` — everything before that
+ * is machine layout the user does not care about, and everything after it is
+ * the package's own internal entry file. Taking the last two path segments
+ * instead (the old behaviour) turned
+ *   .../node_modules/cc-safety-net/dist/deepseek-harness/index.js
+ * into `deepseek-harness/index.js`. That is not a package name, so the row was
+ * listed under a name no user would recognise and did not sort with the rest.
+ *
+ * Scoped packages keep both segments (`@scope/name`). A path with no
+ * node_modules segment at all falls back to the file stem.
+ */
 function displayName(moduleName) {
   if (!moduleName.startsWith('file://')) return moduleName
   const parts = moduleName.split('/').filter(Boolean)
+  // Walk from the right so a nested node_modules (pnpm links one store into
+  // every dependent) resolves to the package nearest the entry file.
+  for (let index = parts.length - 2; index >= 0; index -= 1) {
+    if (parts[index] !== 'node_modules') continue
+    const first = parts[index + 1]
+    if (first === undefined) break
+    if (first.startsWith('@')) {
+      const second = parts[index + 2]
+      // `@scope` with nothing after it is a malformed path; fall through.
+      if (second !== undefined && second.indexOf('.') !== 0) return `${first}/${second}`
+      break
+    }
+    return first
+  }
   const file = parts[parts.length - 1] ?? moduleName
-  const folder = parts[parts.length - 2] ?? ''
-  return folder.length > 0 ? `${folder}/${file}` : file
+  return file
 }
 
 /** The profile directory that owns `node_modules`, derived from a linked row. */
@@ -1981,7 +2058,7 @@ async function hotSwapUpdated(ctx) {
   }
 }
 
-async function applyUpdates(ctx, names, pinned = null) {
+async function applyUpdates(ctx, names, pinned = null, job = null) {
   const facts = profileFacts(ctx)
   if (facts === null) return { ok: false, message: 'profile package.json is unavailable' }
   const script = pnpmScript()
@@ -2010,6 +2087,9 @@ async function applyUpdates(ctx, names, pinned = null) {
   const planned = []
   const registryBase = await configuredRegistry(ctx)
   for (const target of targets) {
+    // 每查一个都先看有没有被取消：registry 查询 + 代理重试是弱网下最长的一段，
+    // 用户在这段时间点取消，不该白等几十秒再发现后台照样在跑。
+    assertNotCancelled(job)
     let latest = pinnedVersions.get(target.name)
     if (latest === undefined) {
       try {
@@ -2021,6 +2101,7 @@ async function applyUpdates(ctx, names, pinned = null) {
     if (compareVersions(latest, target.current) <= 0) continue
     planned.push({ name: target.name, current: target.current, latest })
   }
+  assertNotCancelled(job)
   if (planned.length === 0) return { ok: true, updated: [], message: 'already current' }
 
   // Everything pnpm may touch, kept for the rollback below.
@@ -2047,19 +2128,36 @@ async function applyUpdates(ctx, names, pinned = null) {
     allowNote = error instanceof Error ? error.message : String(error)
   }
 
+  /**
+   * 取消/排队/失败三种提前退出都必须走这里：白名单已经写进 pnpm-workspace.yaml 了，
+   * 光 return 会把条目留在用户文件里，下次更新时那些版本就永远被放行。
+   * pnpm 一次都没跑过，所以只需要恢复这一份文件。
+   */
+  const abandonBeforePnpm = () => {
+    if (allowed === 0) return
+    try {
+      for (const [file, text] of backup) writeFileSync(file, text, 'utf8')
+    } catch {
+      // 写不回去也只能认了：下次更新会重算白名单。
+    }
+  }
+
   // Wait for idle instead of making the user retry by hand.
   let release = null
   const deadline = Date.now() + IDLE_WAIT_MS
   for (;;) {
-    if (activeJobAbort !== null && activeJobAbort.signal.aborted) throw new Error('cancelled by the user')
+    // 取消检查必须在 holdAgents 之前：用户点取消后这里直接退出，
+    // 不能再去抢一次维护门。
+    if (jobCancelled(job) || (activeJobAbort !== null && activeJobAbort.signal.aborted)) {
+      abandonBeforePnpm()
+      throw new Error('cancelled by the user')
+    }
     try {
       release = await holdAgents(ctx)
       break
     } catch {
       if (Date.now() >= deadline) {
-        if (allowed > 0) {
-          for (const [file, text] of backup) writeFileSync(file, text, 'utf8')
-        }
+        abandonBeforePnpm()
         // Nothing was touched; remember the intent so the idle watcher retries
         // it without the user having to babysit the panel.
         enqueueItem({
@@ -2075,6 +2173,16 @@ async function applyUpdates(ctx, names, pinned = null) {
       }
       await new Promise(resume => setTimeout(resume, 3000))
     }
+  }
+
+  // 抢到维护门之后、真正 spawn pnpm 之前，最后再看一次取消。
+  if (jobCancelled(job) || (activeJobAbort !== null && activeJobAbort.signal.aborted)) {
+    try {
+      release()
+    } finally {
+      abandonBeforePnpm()
+    }
+    throw new Error('cancelled by the user')
   }
 
   activeJobStage = 'install'
@@ -2093,6 +2201,9 @@ async function applyUpdates(ctx, names, pinned = null) {
     // Rolling back is one more pnpm run and can take minutes; say so on the
     // job page instead of leaving it frozen on "install".
     activeJobStage = 'rollback'
+    // job.stage 是界面的真实来源：client 靠它把取消按钮摘掉，
+    // 否则用户能在回滚跑到一半时把回滚用的 pnpm 也杀掉。
+    if (job !== null && typeof job === 'object') job.stage = 'rollback'
     let resync = null
     try {
       const releaseAgain = await holdAgents(ctx)
@@ -3532,6 +3643,7 @@ async function pumpQueue(ctx) {
         ctx,
         Array.isArray(item.names) ? item.names : [],
         Array.isArray(item.targets) ? item.targets : null,
+        job,
       )
       endJob(job, result)
       if (busy(result)) return
@@ -3675,7 +3787,7 @@ async function handle(ctx, req, res) {
       // 结果写进 job.json，下次打开面板时由 /job 接回来。
       const job = beginJob('updates', names)
       try {
-        const result = await applyUpdates(ctx, names)
+        const result = await applyUpdates(ctx, names, null, job)
         endJob(job, result)
         return send(res, 200, Object.assign({}, result, { jobId: job.id }))
       } catch (error) {
