@@ -43,9 +43,9 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 - **pnpm 从哪来**：先找 PATH 上的 pnpm，再找 `%APPDATA%\npm`、`%LOCALAPPDATA%\pnpm`、`PNPM_HOME`、`~/.local/share/pnpm`、Homebrew 与系统级安装；Windows 的 `pnpm.cmd` / `pnpm.ps1` 会用 `cmd.exe` / `powershell` 包一层再跑。
 - 想固定某个代理，在数据目录写 `config.json`：`{ "download": { "proxy": "http://127.0.0.1:7897" } }`；写 `"off"` 就只直连；不写就是自动。
 - **断点续传**：连接断了按 `Range` 接着下，取消或失败后保留 `.part`，下次点更新从断的地方继续，不用重下 30 MB。总上限 30 分钟，30 秒没有数据即判定卡死——GitHub 偶尔会把连接挂住，宁可报错也不让面板一直转圈；下过的包按 sha256 复用，重试同一版本不会重新下载。
-- 「全部更新」勾选后批量执行，**执行前先把将运行的命令显示给你看**。
+- **所有更新通道合在一个列表、一个按钮里**：勾选后按来源自动分流——精确版本锁定的依赖合成一次 `pnpm add` 跑完；GitHub 直装走重新拉取；本地压缩包走「下载官方附件 → 核对 sha256 → 替换」；压缩包地址走重新 pin。每个渠道各自成败，一条渠道失败不会中断其它渠道，最后给一份合并报告（「N 组里 M 组失败，其余已完成」）。
 - 装完**自动热替换**，新版本当场生效，不用重启；界面类插件刷新一下页面即可。
-- 能识别 **GitHub 直装 / npm 镜像 tar 包 / 本地文件包 / 本地软链** 这几种特殊装法，并给出对应的处理方式。
+- 能识别 **GitHub 直装 / npm 镜像 tar 包 / 本地文件包 / 本地软链** 这四种装法，并在同一个列表里标出各自来源；本地软链没有「升级」这回事，不会被勾选。
 - registry 取 profile 自己的配置（`pluginManager.registries()`），不强行走 npmjs；装了 `GITHUB_TOKEN` 的话查 GitHub 版本会用它提额。
 
 ### 安装与卸载
@@ -140,7 +140,7 @@ GET  /api/dsh-plugin-rack/            ping 的别名
 GET  /api/dsh-plugin-rack/state       全部插件行 + 自动名单 + 批量进度
 GET  /api/dsh-plugin-rack/detail      某个插件的包信息（?entryId=）
 GET  /api/dsh-plugin-rack/updates     检查更新（按精确版本锁定的依赖）
-GET  /api/dsh-plugin-rack/extras      其他安装方式（github / tar 包 / 本地文件 / 软链）
+GET  /api/dsh-plugin-rack/extras      非精确版本的安装来源（github / tar 包 / 本地文件 / 软链），供更新页分流
 GET  /api/dsh-plugin-rack/updatelog   上一次更新的日志
 GET  /api/dsh-plugin-rack/registries  当前生效的 registry
 GET  /api/dsh-plugin-rack/removable   可以卸载的插件名单

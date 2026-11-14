@@ -3095,19 +3095,27 @@ async function listExtras(ctx) {
     }
     if (spec.startsWith('github:')) {
       const match = GITHUB_SPEC.exec(spec)
+      const installed = installedCommit(facts.dir, name)
       const row = {
         name,
         kind: 'github',
         spec,
         current,
-        installedCommit: installedCommit(facts.dir, name),
+        installedCommit: installed,
         head: null,
         error: null,
+        // 客户端按 hasUpdate 决定一个包要不要进「全部更新」的勾选集。github 行
+        // 之前没有这个字段，于是它永远进不了 picked，repull 分支一次都跑不到。
+        // 判据和徽章按钮用的完全一致：远端 head 与本地 pin 的 commit 不同。
+        hasUpdate: false,
       }
       if (match === null) row.error = '无法解析 github 地址'
       else {
         try {
           row.head = await githubHead(match[1], match[2])
+          if (row.head !== null && typeof row.head.sha === 'string' && row.head.sha !== '') {
+            row.hasUpdate = installed === null || installed !== row.head.sha
+          }
         } catch (error) {
           row.error = error instanceof Error ? error.message : String(error)
         }

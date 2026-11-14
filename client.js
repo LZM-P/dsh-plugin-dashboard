@@ -156,6 +156,7 @@ window.__ModuleLoader__.load({
         jobQueued: 'Queued: downloaded and verified, installs by itself once a session is free ({n})',
         updateRolledBack: 'Rolled back',
         updateFailed: 'Failed',
+        updateNothing: 'Nothing to update for those packages',
         updatePartial: '{n} of {total} groups failed — the rest went through',
         updateSelectAll: 'Select all',
         viewLog: 'Last log',
@@ -313,6 +314,7 @@ window.__ModuleLoader__.load({
         jobQueued: '已排队：附件已下载校验，会话一空闲就会自动安装（{n} 个）',
         updateRolledBack: '已回滚',
         updateFailed: '失败',
+        updateNothing: '选中的这些包没有可更新的内容',
         updatePartial: '{total} 组里 {n} 组失败，其余已完成',
         updateSelectAll: '全选',
         viewLog: '上次日志',
@@ -451,6 +453,93 @@ window.__ModuleLoader__.load({
       if (!response.ok) throw new Error((data && data.message) || response.status + ' ' + response.statusText);
       if (data === null || data.ok !== true) throw new Error((data && data.message) || 'malformed response');
       return data;
+    }
+
+    /**
+     * 把勾选的包名按更新通道分组。
+     *
+     * 精确版本锁定的依赖由 POST /updates 一次 pnpm 装完；github / 本地压缩包 /
+     * 压缩包地址各自有一个 `/extras` 动作，必须逐个跑。分成纯函数是为了能真的
+     * 测到——这个分组错了，`file:` 包会被送进 /updates，然后被 eligibleDeps
+     * 静默过滤掉，界面既不报错也不装。
+     */
+    function partitionTargets(names, extrasRows) {
+      const byName = new Map();
+      for (const row of Array.isArray(extrasRows) ? extrasRows : []) {
+        if (row !== null && typeof row === 'object' && typeof row.name === 'string') byName.set(row.name, row);
+      }
+      const npm = [];
+      const extras = [];
+      for (const name of Array.isArray(names) ? names : []) {
+        const row = byName.get(name);
+        if (row === undefined) {
+          npm.push(name);
+          continue;
+        }
+        if (row.kind === 'github') extras.push({ name, action: 'repull' });
+        else if (row.kind === 'file') extras.push({ name, action: 'file-upgrade' });
+        else if (row.kind === 'link') continue; // 软链没有「升级」这回事
+        else extras.push({ name, action: 'pin' });
+      }
+      return { npm, extras };
+    }
+
+    /**
+     * 把各通道的结果合并成一条给面板看的报告。
+     *
+     * 关键约束：每一条都必须保留，包括失败的那条。以前这里是
+     * `parts.filter(one => one.ok !== true)`，但 request() 在 ok !== true 时
+     * 直接抛错，所以那个 filter 永远为空，updatePartial 一次都不会显示；
+     * 而且「一个渠道失败就整批中断、后面一个都不跑」也藏在同一处。
+     * 现在调用方逐条收集 { ok, ... }，这里只负责汇总。
+     */
+    function mergeUpdateReport(results, messageFor) {
+      const list = Array.isArray(results) ? results : [];
+      // 没有任何渠道真的跑过（比如勾的全是软链包）：返回空，让调用方知道
+      // 「这次什么都没做」，而不是编一个 ok:true 的空报告。
+      if (list.length === 0) return undefined;
+      const failed = list.filter((one) => one !== null && typeof one === 'object' && one.ok !== true);
+      if (list.length === 1) {
+        // 单通道时原样返回：调用方要靠 log / hotSwap / restart 显示详情。
+        return list[0];
+      }
+      const updated = [];
+      for (const one of list) {
+        if (one !== null && typeof one === 'object' && Array.isArray(one.updated)) {
+          for (const item of one.updated) updated.push(item);
+        }
+      }
+      // 每个包的 from/to 不在 extras 的返回里，改用它的 name + to 也能说明白。
+      for (const one of list) {
+        if (one === null || typeof one !== 'object') continue;
+        if (typeof one.name === 'string' && typeof one.to === 'string') {
+          updated.push({ name: one.name, to: one.to });
+        }
+      }
+      const restart = list.some((one) => one !== null && typeof one === 'object' && one.restart === true);
+      const hotSwap = list
+        .map((one) => (one !== null && typeof one === 'object' ? one.hotSwap : undefined))
+        .filter((one) => one !== undefined);
+      const log = list
+        .map((one) => (one !== null && typeof one === 'object' ? one.log : undefined))
+        .filter((one) => typeof one === 'string');
+      return {
+        ok: failed.length === 0,
+        updated,
+        failed: failed.map((one) => ({
+          name: typeof one.name === 'string' ? one.name : '',
+          output: String(one.message ?? one.output ?? ''),
+        })),
+        restart,
+        hotSwap: hotSwap.length > 0 ? hotSwap[hotSwap.length - 1] : undefined,
+        log: log.length > 0 ? log[log.length - 1] : undefined,
+        message:
+          failed.length === 0
+            ? undefined
+            : messageFor === undefined
+              ? undefined
+              : messageFor(failed.length, list.length),
+      };
     }
 
     const CSS = [
@@ -1013,62 +1102,45 @@ window.__ModuleLoader__.load({
           setUpdateLog(null);
           // 勾选的包分两条通道：精确版本锁定的走 POST /updates（一次 pnpm 装完），
           // 本地压缩包 / github / 压缩包地址走 POST /extras（逐个下载校验）。
-          // 之前这里一律发 /updates，file 包被 eligibleDeps 过滤掉、勾了也静默不装。
-          const byKind = new Map();
-          for (const row of (extras !== null && Array.isArray(extras.rows) ? extras.rows : [])) {
-            if (typeof row.name === 'string') byKind.set(row.name, row);
-          }
-          const npmNames = [];
-          const extraNames = [];
-          for (const name of names) {
-            const extra = byKind.get(name);
-            if (extra === undefined) npmNames.push(name);
-            else if (extra.kind === 'github') extraNames.push({ name, action: 'repull' });
-            else if (extra.kind === 'file') extraNames.push({ name, action: 'file-upgrade' });
-            else extraNames.push({ name, action: 'pin' });
-          }
-          try {
-            const parts = [];
-            if (npmNames.length > 0) {
+          const plan = partitionTargets(names, extras !== null && Array.isArray(extras.rows) ? extras.rows : []);
+          // 每一条渠道各自 try/catch：request() 在 ok !== true 时抛错，如果不接住，
+          // 一个包失败会让后面的渠道一个都不跑，前面已成功的也拿不到报告。
+          const results = [];
+          if (plan.npm.length > 0) {
+            try {
               // A registry download per package; the host serializes them under one
               // maintenance hold, so this can legitimately outlive the default budget.
-              const next = await request('/updates', { names: npmNames }, { timeoutMs: WRITE_TIMEOUT_MS });
-              parts.push(next);
+              results.push(await request('/updates', { names: plan.npm }, { timeoutMs: WRITE_TIMEOUT_MS }));
+            } catch (error) {
+              results.push({ ok: false, name: plan.npm.join(', '), message: String(error && error.message) });
             }
-            for (const item of extraNames) {
+          }
+          for (const item of plan.extras) {
+            try {
               const next = await request(
                 '/extras',
                 { name: item.name, action: item.action },
                 { timeoutMs: WRITE_TIMEOUT_MS },
               );
-              parts.push(next);
+              results.push({ name: item.name, ...next });
+            } catch (error) {
+              results.push({ ok: false, name: item.name, message: String(error && error.message) });
             }
-            const failed = parts.filter((one) => one.ok !== true);
-            const updated = parts.flatMap((one) => (Array.isArray(one.updated) ? one.updated : []));
-            const merged =
-              parts.length === 1 && extraNames.length === 0
-                ? parts[0]
-                : {
-                    ok: failed.length === 0,
-                    updated,
-                    failed: failed.map((one) => ({ name: one.name ?? '', output: String(one.message ?? '') })),
-                    message:
-                      failed.length === 0
-                        ? undefined
-                        : t('updatePartial', { n: failed.length, total: parts.length }),
-                  };
-            setUpdateLog(merged);
-            // Re-check on success so the list and the tab badge stop advertising
-            // updates that were just installed.
-            if (failed.length === 0) {
-              await load();
-              await checkUpdates();
-            }
-          } catch (error) {
-            setUpdateLog({ ok: false, message: String(error && error.message) });
-          } finally {
-            setUpdatesBusy('');
           }
+          const merged = mergeUpdateReport(results, (n, total) => t('updatePartial', { n, total }));
+          if (merged === undefined) {
+            // 勾到的全是软链包之类的「没有升级这回事」的行：不编造报告。
+            setToast({ kind: 'warn', text: t('updateNothing') });
+            setUpdatesBusy('');
+            return;
+          }
+          setUpdateLog(merged);
+          // 全部成功才重新拉一遍：有失败时保留刚才那份报告，别立刻把它冲掉。
+          if (merged.ok === true) {
+            await load();
+            await checkUpdates();
+          }
+          setUpdatesBusy('');
         }, [picked, updatesBusy, extras, load, checkUpdates, t]);
 
         const viewLog = React.useCallback(async () => {

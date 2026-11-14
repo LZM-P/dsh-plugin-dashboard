@@ -178,22 +178,109 @@ console.log('connection reset is not reported as failure')
 console.log('one update button covers both channels')
 {
   const client = readFileSync(join(root, 'client.js'), 'utf8')
-  // 「其他安装方式」那一栏已经去掉。勾选的包现在按通道分流：
-  // 精确版本锁定的走 POST /updates，github / 本地压缩包 / 压缩包地址走 POST /extras。
-  // 之前这里一律发 /updates，file 包被 eligibleDeps 过滤掉，勾了也静默不装。
-  check('the batch splits selected names into two channels', client.includes('const npmNames = []'))
-  check('file packages are routed to file-upgrade', client.includes("extra.kind === 'file'") && client.includes("action: 'file-upgrade'"))
-  check('github packages are routed to repull', client.includes("action: 'repull'"))
-  check('tarball packages are routed to pin', client.includes("action: 'pin'"))
-  check('the npm channel still uses one /updates call', client.includes("request('/updates', { names: npmNames }"))
-  // extras 的结果不能直接塞进 updateLog 当整份快照用，必须被合并成一条。
-  check('mixed results are merged into one report', client.includes('const merged ='))
-  check('a partial failure is surfaced, not hidden', client.includes('updatePartial'))
-  // 勾选现在同时来自两个接口。
-  check('selections come from both endpoints', client.includes("extrasNext = await request('/extras')"))
-  // 那一栏本身必须真的没了。
-  check('the extras panel is gone', !client.includes('extrasPanel'))
-  check('the per-row extras renderer is gone', !client.includes('extraRowNode'))
+
+  // 真跑这两个纯函数。上一版这 10 项全是 client.includes(...)，其中
+  // 「a partial failure is surfaced」只检查有没有 updatePartial 这个词——
+  // 而那个分支当时永远走不到，断言照样绿。
+  function loadClientFn(name) {
+    const start = client.indexOf('    function ' + name + '(')
+    if (start === -1) throw new Error('function ' + name + ' not found in client.js')
+    let depth = 0
+    let index = client.indexOf('{', start)
+    for (; index < client.length; index += 1) {
+      const ch = client[index]
+      if (ch === '{') depth += 1
+      else if (ch === '}') {
+        depth -= 1
+        if (depth === 0) break
+      }
+    }
+    return client.slice(start, index + 1).replace(/^function\s+\w+/, 'function')
+  }
+
+  const partitionTargets = new Function('return (' + loadClientFn('partitionTargets') + ')')()
+  const mergeUpdateReport = new Function('return (' + loadClientFn('mergeUpdateReport') + ')')()
+  const messageFor = (n, total) => n + ' of ' + total + ' failed'
+
+  // ---- 分区 ----
+  const extrasRows = [
+    { name: 'gh-pkg', kind: 'github', hasUpdate: true },
+    { name: 'file-pkg', kind: 'file', hasUpdate: true },
+    { name: 'tar-pkg', kind: 'tarball', hasUpdate: false },
+    { name: 'link-pkg', kind: 'link' },
+  ]
+  const split = partitionTargets(['npm-a', 'npm-b', 'gh-pkg', 'file-pkg', 'tar-pkg', 'link-pkg'], extrasRows)
+  check('npm names go to the batch endpoint', JSON.stringify(split.npm) === JSON.stringify(['npm-a', 'npm-b']))
+  check(
+    'file packages reach file-upgrade',
+    split.extras.some((one) => one.name === 'file-pkg' && one.action === 'file-upgrade'),
+  )
+  check(
+    'github packages reach repull',
+    split.extras.some((one) => one.name === 'gh-pkg' && one.action === 'repull'),
+  )
+  check(
+    'tarball packages reach pin',
+    split.extras.some((one) => one.name === 'tar-pkg' && one.action === 'pin'),
+  )
+  check('link packages are skipped entirely', !split.extras.some((one) => one.name === 'link-pkg'))
+  check('an unknown name defaults to the npm channel', partitionTargets(['mystery'], []).npm.length === 1)
+
+  // ---- 合并：一个渠道失败不能吞掉其它渠道 ----
+  const mixed = mergeUpdateReport(
+    [
+      { ok: true, updated: [{ name: 'npm-a', from: '1.0.0', to: '1.0.1' }] },
+      { ok: false, name: 'file-pkg', message: 'checksum mismatch' },
+    ],
+    messageFor,
+  )
+  check('a mixed run is not reported as success', mixed.ok === false)
+  check('the failure is listed with its reason', mixed.failed.length === 1 && mixed.failed[0].name === 'file-pkg')
+  check('the partial message is actually produced', mixed.message === '1 of 2 failed')
+  check('the successful channel is still reported', mixed.updated.length === 1)
+  check('a reason string survives into failed[].output', mixed.failed[0].output === 'checksum mismatch')
+
+  // 单个渠道时原样透传，面板要靠 log / hotSwap / restart 显示详情。
+  const single = mergeUpdateReport([{ ok: true, log: '/tmp/x.log', hotSwap: { ok: true }, restart: false }], messageFor)
+  check('a single channel passes through unchanged', single.log === '/tmp/x.log' && single.restart === false)
+
+  // 全成功时不能编出失败信息。
+  const allGood = mergeUpdateReport(
+    [
+      { ok: true, updated: [{ name: 'a', from: '1', to: '2' }] },
+      { ok: true, name: 'b', to: '3.0.0' },
+    ],
+    messageFor,
+  )
+  check('an all-success run is ok', allGood.ok === true)
+  check('an all-success run has no message', allGood.message === undefined)
+  check('both channels contribute to updated', allGood.updated.length === 2)
+
+  // restart 必须从任何一个渠道冒上来，否则混合更新的用户不知道要重启。
+  const needsRestart = mergeUpdateReport(
+    [
+      { ok: true, restart: false },
+      { ok: true, name: 'x', to: '2.0.0', restart: true },
+    ],
+    messageFor,
+  )
+  check('restart propagates from any channel', needsRestart.restart === true)
+
+  // 空输入不能炸：没有渠道要跑时调用方不该收到任何报告对象。
+  const empty = mergeUpdateReport([], messageFor)
+  check('an empty result returns nothing rather than throwing', empty === undefined)
+
+  // ---- 结构约束 ----
+  check(
+    'every extras channel is wrapped in its own try/catch',
+    /for \(const item of plan\.extras\)[\s\S]{0,400}?catch \(error\)/.test(client),
+  )
+  check(
+    'the npm channel is wrapped too',
+    /try \{\s*\n\s*\/\/ A registry download[\s\S]{0,300}?catch \(error\)/.test(client),
+  )
+  check('a thrown channel is collected, not rethrown', client.includes('results.push({ ok: false, name: item.name, message:'))
+  check('the panel keeps the report when a channel failed', client.includes('if (merged.ok === true) {'))
 }
 
 console.log('write gate')
