@@ -171,6 +171,7 @@ window.__ModuleLoader__.load({
         jobFailed: 'Background update failed',
         jobInterrupted: 'The last update never finished (host restarted or interrupted)',
         jobCancel: 'Cancel',
+        jobQueued: 'Queued: downloaded and verified, installs by itself once a session is free ({n})',
         updateRolledBack: 'Rolled back',
         updateFailed: 'Failed',
         updateSelectAll: 'Select all',
@@ -346,6 +347,7 @@ window.__ModuleLoader__.load({
         jobFailed: '后台更新失败',
         jobInterrupted: '上次更新没跑完（宿主重启或中断）',
         jobCancel: '取消',
+        jobQueued: '已排队：附件已下载校验，会话一空闲就会自动安装（{n} 个）',
         updateRolledBack: '已回滚',
         updateFailed: '失败',
         updateSelectAll: '全选',
@@ -803,6 +805,8 @@ window.__ModuleLoader__.load({
         // 后台更新任务：更新由宿主执行，面板关掉之后它还在跑。回到这里时把
         // 进度、以及「跑完了没、成没成」接回来，而不是让人去翻日志。
         const [job, setJob] = React.useState(null);
+        // 已经下好、只等会话空闲就会自己装上的那些更新。
+        const [queued, setQueued] = React.useState([]);
 
         // 展开过的行，详情只取一次并缓存；但列表一刷新（装了一个、卸了一个、
         // 升级了一个），缓存里那份的版本号与描述就全过时了，所以 load() 会把缓存
@@ -1356,6 +1360,7 @@ window.__ModuleLoader__.load({
               if (!alive) return;
               const current = answer.job === undefined ? null : answer.job;
               setJob(current);
+              setQueued(Array.isArray(answer.queue) ? answer.queue : []);
               if (current === null || current.finishedAt === null) return;
               if (seenJob.current === null) {
                 try {
@@ -2615,7 +2620,13 @@ window.__ModuleLoader__.load({
                     t('jobCancel'),
                   ),
                 )
-              : null,
+              : queued.length > 0
+                ? h(
+                    'div',
+                    { className: 'pd-jobbar' },
+                    h('span', null, t('jobQueued', { n: String(queued.length) })),
+                  )
+                : null,
           ),
           tab === 'updates'
             ? null

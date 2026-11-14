@@ -117,6 +117,52 @@ function jobFile() {
   return join(stateDir(), 'job.json')
 }
 
+/**
+ * Updates the host already fetched but could not install yet, because an Agent
+ * was mid-turn. The verified tarball sits on disk, so applying a queued entry
+ * later costs one `pnpm install` — no download, no waiting on GitHub again.
+ */
+function queueFile() {
+  return join(stateDir(), 'queue.json')
+}
+
+function readQueue() {
+  try {
+    const parsed = JSON.parse(readFileSync(queueFile(), 'utf8'))
+    if (Array.isArray(parsed)) {
+      return parsed.filter(item => item !== null && typeof item === 'object' && typeof item.kind === 'string')
+    }
+  } catch (error) {
+    void error
+  }
+  return []
+}
+
+function writeQueue(list) {
+  try {
+    mkdirSync(stateDir(), { recursive: true })
+    writeFileSync(queueFile(), JSON.stringify(list, null, 2) + '\n', 'utf8')
+  } catch {
+    // Losing a queued entry only costs the user another click.
+  }
+}
+
+function queueKey(item) {
+  if (item.kind === 'updates') return 'updates:' + (Array.isArray(item.names) ? item.names.join(',') : '')
+  return 'extras:' + String(item.name ?? '')
+}
+
+function enqueueItem(item) {
+  const list = readQueue().filter(one => queueKey(one) !== queueKey(item))
+  list.push({ ...item, queuedAt: new Date().toISOString() })
+  writeQueue(list)
+  return list
+}
+
+function dequeueItem(item) {
+  writeQueue(readQueue().filter(one => queueKey(one) !== queueKey(item)))
+}
+
 /** The run this host process is executing right now, if any. */
 let activeJob = null
 /** Aborts the network work of the run in `activeJob` when the user cancels it. */
@@ -1790,10 +1836,13 @@ async function applyUpdates(ctx, names) {
         if (allowed > 0) {
           for (const [file, text] of backup) writeFileSync(file, text, 'utf8')
         }
+        // Nothing was touched; remember the intent so the idle watcher retries
+        // it without the user having to babysit the panel.
+        enqueueItem({ kind: 'updates', names: planned.map(item => item.name) })
         return {
-          ok: false,
-          waiting: true,
-          message: '等了几分钟会话一直在忙，先不动任何文件；空闲后再点一次更新',
+          ok: true,
+          queued: true,
+          message: '会话一直在忙，这次更新先排队；空闲后自动装上',
         }
       }
       await new Promise(resume => setTimeout(resume, 3000))
@@ -2425,9 +2474,14 @@ async function applyFileUpgrade(ctx, name) {
   try {
     release = await holdAgents(ctx)
   } catch {
-    // The verified tarball stays on disk on purpose: the next click re-checks
-    // its sha256 and skips the download entirely.
-    return { ok: false, waiting: true, message: '有会话正在运行，等它结束后再点一次升级（附件已备好，不会重新下载）' }
+    // The verified tarball stays on disk and the entry joins the queue: the
+    // idle watcher installs it as soon as every Agent is between turns.
+    enqueueItem({ kind: 'extras', name, action: 'file-upgrade' })
+    return {
+      ok: true,
+      queued: true,
+      message: '附件已下载并校验，先排队；会话一空闲就自动装上',
+    }
   }
 
   let outcome = null
@@ -2724,6 +2778,61 @@ async function actInstall(ctx, spec) {
   }
 }
 
+/** How often the idle watcher looks for queued work. */
+const QUEUE_TICK_MS = 10 * 1000
+
+/**
+ * Apply one queued update as soon as every Agent is between turns.
+ *
+ * The host refuses a file swap while a turn is running — exactly what
+ * `holdAgents` prevents — so a queued entry is only taken when the agents can be
+ * claimed for the length of one pnpm run. Nothing here downloads: a queued
+ * file-upgrade already has its verified tarball on disk, and a queued npm update
+ * re-resolves with pnpm.
+ */
+async function pumpQueue(ctx) {
+  const list = readQueue()
+  if (list.length === 0) return
+  if (activeJob !== null) return
+  if (!beginMutation()) return
+  const item = list[0]
+  try {
+    let release = null
+    try {
+      release = await holdAgents(ctx)
+    } catch {
+      return
+    }
+    release()
+    const busy = result => result !== null && typeof result === 'object' && result.queued === true
+    const failed = result => result === null || typeof result !== 'object' || result.ok !== true
+    if (item.kind === 'updates') {
+      const job = beginJob('updates', Array.isArray(item.names) ? item.names : [])
+      const result = await applyUpdates(ctx, Array.isArray(item.names) ? item.names : [])
+      endJob(job, result)
+      if (busy(result)) return
+      if (failed(result)) {
+        dequeueItem(item)
+        return
+      }
+    } else {
+      const job = beginJob('extras', [item.name])
+      const result = await applyExtras(ctx, item.name, typeof item.action === 'string' ? item.action : 'file-upgrade')
+      endJob(job, result)
+      if (busy(result)) return
+      if (failed(result)) {
+        dequeueItem(item)
+        return
+      }
+    }
+    dequeueItem(item)
+  } catch (error) {
+    void error
+  } finally {
+    endMutation()
+  }
+}
+
 async function handle(ctx, req, res) {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = url.pathname.slice(ROUTE_PREFIX.length) || '/'
@@ -2776,7 +2885,7 @@ async function handle(ctx, req, res) {
   }
   // 上一次/正在跑的更新任务。面板可能在中途被关掉，回来时靠这个续上进度。
   if (method === 'GET' && path === '/job') {
-    return send(res, 200, { ok: true, job: jobStatus() })
+    return send(res, 200, { ok: true, job: jobStatus(), queue: readQueue() })
   }
   // 取消正在跑的那一次。下载阶段能立刻停，pnpm 阶段只能等它退出。
   if (method === 'POST' && path === '/job') {
@@ -2963,4 +3072,15 @@ export function apply(ctx) {
         }),
     }),
   )
+
+  // Queued updates must outlive the panel that asked for them: this timer is the
+  // only thing that turns "downloaded, waiting for a free moment" into "installed".
+  // It is unref'd so a test or a short-lived host never waits on the queue.
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      pumpQueue(ctx).catch(() => {})
+    }, QUEUE_TICK_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    return () => clearInterval(timer)
+  })
 }

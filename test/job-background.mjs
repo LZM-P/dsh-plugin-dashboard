@@ -89,6 +89,11 @@ const first = await getJob()
 if (first !== null) fail('GET /job should be null before any update')
 else console.log('ok   /job is empty before the first update')
 
+// 1b. The same read carries the queue that the idle watcher works through.
+const firstAnswer = await (await fetch(base + '/job')).json()
+if (!Array.isArray(firstAnswer.queue) || firstAnswer.queue.length !== 0) fail('/job must report an empty queue')
+else console.log('ok   /job reports an empty queue')
+
 // 2. Start an update and drop the connection the way a closed panel does.
 await new Promise((resolve, reject) => {
   const body = JSON.stringify({ names: ['rack-job-probe'] })
@@ -160,6 +165,27 @@ else console.log('ok   cancelling an idle host answers 409')
 const badCancel = await postJob({ action: 'boom' })
 if (badCancel !== 400) fail('an unknown job action must answer 400, got ' + badCancel)
 else console.log('ok   an unknown job action answers 400')
+
+// 7. A queued update is picked up on its own, without any request driving it.
+//    The probe's registry is a closed port, so this run must leave a failed job
+//    and an empty queue behind: that is the watcher doing the work.
+const queueFile = join(home, 'plugin-rack', 'queue.json')
+mkdirSync(join(home, 'plugin-rack'), { recursive: true })
+writeFileSync(queueFile, JSON.stringify([{ kind: 'updates', names: ['rack-job-probe'], queuedAt: new Date().toISOString() }], null, 2))
+const queuedJobId = job === null ? null : job.id
+let pumped = false
+const pumpDeadline = Date.now() + 25000
+while (Date.now() < pumpDeadline) {
+  const answer = await (await fetch(base + '/job')).json()
+  if (answer.job !== null && answer.job.id !== queuedJobId && answer.job.finishedAt !== null) {
+    pumped = true
+    if (Array.isArray(answer.queue) && answer.queue.length !== 0) fail('the finished queued run must leave an empty queue')
+    break
+  }
+  await new Promise((done) => setTimeout(done, 500))
+}
+if (!pumped) fail('the idle watcher never picked the queued update up')
+else console.log('ok   a queued update is applied by the idle watcher')
 
 server.close()
 if (process.exitCode === 1) console.error('\nJOB_BACKGROUND_FAILED')
