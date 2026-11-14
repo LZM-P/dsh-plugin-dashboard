@@ -52,7 +52,7 @@
  * overrides this plugin created are ever removed — so the user can switch
  * plugins off and restart once instead of waiting for a reload per plugin.
  */
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -171,6 +171,10 @@ function dequeueItem(item) {
 let activeJob = null
 /** Aborts the network work of the run in `activeJob` when the user cancels it. */
 let activeJobAbort = null
+/** Which step the run in `activeJob` is on: 'start', 'download' or 'install'. */
+let activeJobStage = null
+/** The pnpm child of the run in `activeJob`, so cancel can actually stop it. */
+let activePnpmChild = null
 
 function readJob() {
   try {
@@ -211,20 +215,27 @@ function beginJob(kind, names) {
   }
   activeJob = job
   activeJobAbort = new AbortController()
+  activeJobStage = 'start'
   persistJob(job)
   return job
 }
 
 function endJob(job, result) {
+  const previousMessage = job.message
   job.finishedAt = new Date().toISOString()
   job.ok = result !== null && typeof result === 'object' && result.ok === true
   job.message = result !== null && typeof result === 'object' && typeof result.message === 'string' ? result.message : null
+  // A cancelled run keeps saying so even when the dying pnpm reports its own
+  // failure a moment later.
+  if (job.cancelled === true && job.ok !== true) job.message = previousMessage
   job.restart = result !== null && typeof result === 'object' && result.restart === true
   job.updated = result !== null && typeof result === 'object' && Array.isArray(result.updated) ? result.updated : []
   job.failed = result !== null && typeof result === 'object' && Array.isArray(result.failed) ? result.failed : []
   if (activeJob !== null && activeJob.id === job.id) {
     activeJob = null
     activeJobAbort = null
+    activeJobStage = null
+    activePnpmChild = null
   }
   persistJob(job)
   return job
@@ -237,8 +248,19 @@ function endJob(job, result) {
 function cancelJob() {
   const job = activeJob
   if (job === null) return { ok: false, message: 'no update is running' }
+  job.cancelled = true
+  const killedPnpm = activePnpmChild !== null
+  if (activePnpmChild !== null) {
+    killTree(activePnpmChild)
+    activePnpmChild = null
+  }
   if (activeJobAbort !== null) activeJobAbort.abort(new Error('cancelled by the user'))
-  endJob(job, { ok: false, message: 'cancelled by the user' })
+  const message = killedPnpm
+    ? '已取消：pnpm 进程被终止，动过的文件会由回滚逻辑还原'
+    : activeJobStage === 'download'
+      ? '已取消：下载已中断，下好的部分留着下次续传'
+      : '已取消'
+  endJob(job, { ok: false, message })
   return { ok: true, job: jobStatus() }
 }
 
@@ -1189,15 +1211,20 @@ async function actBulk(ctx, enabled, scope, mode) {
   // `save` writes the patch and reloads nothing. It is the right mode for the
   // "stop everything, update it, restart" workflow, which restarts anyway.
   if (mode === 'save') {
-    const written = await writeEnabledBatch(ctx, targets, enabled)
-    return {
-      ok: true,
-      saved: true,
-      total: written.changed.length,
-      unchanged: unchanged + written.unchanged,
-      guarded: guards.length,
-      patchPath: written.patchPath,
-      bulk: null,
+    if (!beginMutation()) return { ok: false, message: BUSY_MESSAGE }
+    try {
+      const written = await writeEnabledBatch(ctx, targets, enabled)
+      return {
+        ok: true,
+        saved: true,
+        total: written.changed.length,
+        unchanged: unchanged + written.unchanged,
+        guarded: guards.length,
+        patchPath: written.patchPath,
+        bulk: null,
+      }
+    } finally {
+      endMutation()
     }
   }
 
@@ -1218,6 +1245,9 @@ async function actBulk(ctx, enabled, scope, mode) {
   // polls /state, which carries `bulk`. It keeps a local reference because a
   // later run replaces `bulkJob` while this one may still be finishing.
   const job = bulkJob
+  // The detached run owns the mutex until it finishes: a bulk toggle and a
+  // pnpm install must never edit the profile at the same moment.
+  mutationBusy = true
   void (async () => {
     for (const row of targets) {
       if (job.cancelled) break
@@ -1233,6 +1263,7 @@ async function actBulk(ctx, enabled, scope, mode) {
     .finally(() => {
       job.current = null
       job.running = false
+      mutationBusy = false
     })
 
   return {
@@ -1531,14 +1562,66 @@ async function holdAgents(ctx) {
 }
 
 /** The pnpm entry point installed next to the host, or null. */
+function pathEntries() {
+  const raw = typeof process.env.PATH === 'string' ? process.env.PATH : ''
+  const separator = process.platform === 'win32' ? ';' : ':'
+  return raw
+    .split(separator)
+    .map(entry => entry.trim().replace(/^"|"$/g, ''))
+    .filter(entry => entry !== '')
+}
+
+/** Find `name`, with the platform's usual suffixes, on PATH. */
+function resolveOnPath(name) {
+  const suffixes = process.platform === 'win32' ? ['', '.cmd', '.exe'] : ['']
+  for (const dir of pathEntries()) {
+    for (const suffix of suffixes) {
+      const candidate = join(dir, name + suffix)
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return null
+}
+
+/**
+ * The pnpm entry script, or null when pnpm is not installed.
+ *
+ * A global install is a launcher: on Windows it sits under %APPDATA%\npm, on
+ * macOS and Linux it is a symlink in a bin directory pointing at
+ * `<prefix>/lib/node_modules/pnpm/bin/pnpm.cjs`. Resolving that symlink gives
+ * a script `node` can run directly; the plugin never depends on a shell shim,
+ * because a shim is what breaks first under a bare environment.
+ */
 function pnpmScript() {
   const candidates = []
-  const appData = typeof process.env.APPDATA === 'string' ? process.env.APPDATA.trim() : ''
-  if (appData !== '') candidates.push(join(appData, 'npm', 'node_modules', 'pnpm', 'bin', 'pnpm.mjs'))
-  const localData = typeof process.env.LOCALAPPDATA === 'string' ? process.env.LOCALAPPDATA.trim() : ''
-  if (localData !== '') candidates.push(join(localData, 'pnpm', 'node_modules', 'pnpm', 'bin', 'pnpm.mjs'))
+  if (process.platform === 'win32') {
+    const appData = typeof process.env.APPDATA === 'string' ? process.env.APPDATA.trim() : ''
+    if (appData !== '') candidates.push(join(appData, 'npm', 'node_modules', 'pnpm', 'bin', 'pnpm.mjs'))
+    const localData = typeof process.env.LOCALAPPDATA === 'string' ? process.env.LOCALAPPDATA.trim() : ''
+    if (localData !== '') candidates.push(join(localData, 'pnpm', 'node_modules', 'pnpm', 'bin', 'pnpm.mjs'))
+  } else {
+    const home = homedir()
+    const pnpmHome = typeof process.env.PNPM_HOME === 'string' ? process.env.PNPM_HOME.trim() : ''
+    if (pnpmHome !== '') candidates.push(join(pnpmHome, 'node_modules', 'pnpm', 'bin', 'pnpm.mjs'))
+    candidates.push(
+      join(home, '.local', 'share', 'pnpm', 'node_modules', 'pnpm', 'bin', 'pnpm.mjs'),
+      join(home, 'Library', 'pnpm', 'node_modules', 'pnpm', 'bin', 'pnpm.mjs'),
+      '/usr/local/lib/node_modules/pnpm/bin/pnpm.mjs',
+      '/opt/homebrew/lib/node_modules/pnpm/bin/pnpm.mjs',
+      '/usr/lib/node_modules/pnpm/bin/pnpm.mjs',
+    )
+  }
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate
+  }
+  const shim = resolveOnPath('pnpm')
+  if (shim !== null) {
+    try {
+      const real = realpathSync(shim)
+      if (/\.(c|m)?js$/i.test(real) && existsSync(real)) return real
+    } catch {
+      // Not a symlink (or not ours to resolve): fall through.
+    }
   }
   return null
 }
@@ -1563,12 +1646,29 @@ function nodeRuntime() {
   if (nodeRuntimeCache !== null) return nodeRuntimeCache
   const execPath = typeof process.execPath === 'string' ? process.execPath : ''
   nodeRuntimeCache = execPath
-  if (process.platform !== 'win32') return nodeRuntimeCache
-  const raw = typeof process.env.PATH === 'string' ? process.env.PATH : ''
+  const found = resolveOnPath('node')
+  if (found !== null) {
+    try {
+      const real = realpathSync(found)
+      if (real !== '' && existsSync(real)) {
+        nodeRuntimeCache = real
+        if (execPath === '' || real.toLowerCase() !== execPath.toLowerCase()) return nodeRuntimeCache
+      }
+    } catch {
+      // Keep the Electron fallback below.
+    }
+  }
+  if (process.platform !== 'win32') {
+    for (const candidate of ['/usr/local/bin/node', '/opt/homebrew/bin/node', '/usr/bin/node']) {
+      if (existsSync(candidate)) {
+        nodeRuntimeCache = candidate
+        break
+      }
+    }
+    return nodeRuntimeCache
+  }
   const seen = new Set()
-  for (const entry of raw.split(';')) {
-    const dir = entry.trim().replace(/^"|"$/g, '')
-    if (dir === '') continue
+  for (const dir of pathEntries()) {
     const key = dir.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
@@ -1630,6 +1730,7 @@ function runPnpm(script, args, cwd, timeoutMs = PNPM_TIMEOUT) {
       env,
     })
     let output = ''
+    activePnpmChild = child
     let settled = false
     const collect = chunk => {
       output += String(chunk)
@@ -1646,6 +1747,7 @@ function runPnpm(script, args, cwd, timeoutMs = PNPM_TIMEOUT) {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (activePnpmChild === child) activePnpmChild = null
       resolve(result)
     }
     child.stdout?.on('data', collect)
@@ -1775,13 +1877,24 @@ async function hotSwapUpdated(ctx) {
   }
 }
 
-async function applyUpdates(ctx, names) {
+async function applyUpdates(ctx, names, pinned = null) {
   const facts = profileFacts(ctx)
   if (facts === null) return { ok: false, message: 'profile package.json is unavailable' }
   const script = pnpmScript()
   if (script === null) return { ok: false, message: 'pnpm was not found next to the host' }
 
   const wanted = Array.isArray(names) ? names.filter(name => typeof name === 'string') : []
+  // A queued update remembers the version the user actually agreed to.
+  // Re-resolving `latest` minutes later would install a release they never
+  // saw, which is exactly the drift this queue is supposed to avoid.
+  const pinnedVersions = new Map()
+  if (Array.isArray(pinned)) {
+    for (const one of pinned) {
+      if (one === null || typeof one !== 'object') continue
+      if (typeof one.name !== 'string' || typeof one.version !== 'string') continue
+      pinnedVersions.set(one.name, one.version)
+    }
+  }
   const byName = new Map(eligibleDeps(facts).map(entry => [entry.name, entry]))
   const targets = []
   for (const name of wanted) {
@@ -1793,11 +1906,13 @@ async function applyUpdates(ctx, names) {
   const planned = []
   const registryBase = await configuredRegistry(ctx)
   for (const target of targets) {
-    let latest
-    try {
-      latest = await npmLatest(target.name, registryBase)
-    } catch (error) {
-      return { ok: false, message: `${target.name}: ${error instanceof Error ? error.message : String(error)}` }
+    let latest = pinnedVersions.get(target.name)
+    if (latest === undefined) {
+      try {
+        latest = await npmLatest(target.name, registryBase)
+      } catch (error) {
+        return { ok: false, message: `${target.name}: ${error instanceof Error ? error.message : String(error)}` }
+      }
     }
     if (compareVersions(latest, target.current) <= 0) continue
     planned.push({ name: target.name, current: target.current, latest })
@@ -1842,7 +1957,11 @@ async function applyUpdates(ctx, names) {
         }
         // Nothing was touched; remember the intent so the idle watcher retries
         // it without the user having to babysit the panel.
-        enqueueItem({ kind: 'updates', names: planned.map(item => item.name) })
+        enqueueItem({
+          kind: 'updates',
+          names: planned.map(item => item.name),
+          targets: planned.map(item => ({ name: item.name, version: item.latest })),
+        })
         return {
           ok: true,
           queued: true,
@@ -1853,6 +1972,7 @@ async function applyUpdates(ctx, names) {
     }
   }
 
+  activeJobStage = 'install'
   const args = ['add', ...planned.map(item => `${item.name}@${item.latest}`), '--save-exact', '--prefer-offline']
   let result = { code: -1, output: 'pnpm did not run' }
   try {
@@ -2554,13 +2674,16 @@ export async function fetchAny(url, init) {
     const target = new URL(url)
     const signal = init !== undefined && init !== null ? init.signal : undefined
     const routes = downloadRoutes(target)
+    const failures = []
     for (const route of routes) {
       try {
         return await readResponseLike(target, route.route, signal)
       } catch (next) {
-              }
+        failures.push(route.label + ': ' + (next instanceof Error ? next.message : String(next)))
+      }
     }
-    throw error
+    const detail = failures.length === 0 ? '' : ` (tried ${failures.join('; ')})`
+    throw new Error((error instanceof Error ? error.message : String(error)) + detail)
   }
 }
 
@@ -2693,6 +2816,7 @@ async function guardedPnpm(ctx, facts, script, args) {
       // Absent lockfile is normal.
     }
   }
+  activeJobStage = 'install'
   let release
   try {
     release = await holdAgents(ctx)
@@ -2852,6 +2976,7 @@ async function applyFileUpgrade(ctx, name) {
   }
 
   let bytes = 0
+  activeJobStage = 'download'
   try {
     // A previous attempt may already have fetched and verified this very asset.
     // Reusing it turns a 12-minute retry into an instant one, and the sha256 of
@@ -2883,6 +3008,7 @@ async function applyFileUpgrade(ctx, name) {
     }
   }
 
+  activeJobStage = 'install'
   let release
   try {
     release = await holdAgents(ctx)
@@ -3221,7 +3347,11 @@ async function pumpQueue(ctx) {
     const failed = result => result === null || typeof result !== 'object' || result.ok !== true
     if (item.kind === 'updates') {
       const job = beginJob('updates', Array.isArray(item.names) ? item.names : [])
-      const result = await applyUpdates(ctx, Array.isArray(item.names) ? item.names : [])
+      const result = await applyUpdates(
+        ctx,
+        Array.isArray(item.names) ? item.names : [],
+        Array.isArray(item.targets) ? item.targets : null,
+      )
       endJob(job, result)
       if (busy(result)) return
       if (failed(result)) {
@@ -3246,6 +3376,22 @@ async function pumpQueue(ctx) {
   }
 }
 
+/**
+ * The name part of a Host header. `[::1]:18338` has to come out as `::1`,
+ * and a bare IPv6 literal has no port to strip, only brackets.
+ */
+function hostName(raw) {
+  const text = String(raw ?? '').trim().toLowerCase()
+  if (text === '') return ''
+  if (text.startsWith('[')) {
+    const end = text.indexOf(']')
+    return end === -1 ? text : text.slice(1, end)
+  }
+  const colon = text.lastIndexOf(':')
+  if (colon !== -1 && text.indexOf(':') === colon) return text.slice(0, colon)
+  return text
+}
+
 async function handle(ctx, req, res) {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = url.pathname.slice(ROUTE_PREFIX.length) || '/'
@@ -3254,8 +3400,8 @@ async function handle(ctx, req, res) {
   // 只接受来自 web GUI 本身的调用。两层防线：
   // 1. Host 必须是 127.0.0.1 / localhost / ::1 —— 拒绝 DNS rebinding（恶意域名解析到 127.0.0.1）。
   // 2. 有 Origin 就必须同源 —— 拒绝跨站 fetch。没 Origin 的是 curl / 同源导航，放过。
-  const host = String(req.headers.host ?? '').toLowerCase().split(':')[0]
-  const hostOk = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'
+  const host = hostName(req.headers.host)
+  const hostOk = host === '127.0.0.1' || host === 'localhost' || host === '::1'
   if (!hostOk) {
     return send(res, 403, { ok: false, message: 'host not allowed' })
   }
@@ -3445,7 +3591,14 @@ async function handle(ctx, req, res) {
     }
   }
   if (method === 'POST' && path === '/plugin') {
-    return send(res, 200, await actPlugin(ctx, await readJsonBody(req)))
+    if (!beginMutation()) {
+      return send(res, 200, { ok: false, message: BUSY_MESSAGE })
+    }
+    try {
+      return send(res, 200, await actPlugin(ctx, await readJsonBody(req)))
+    } finally {
+      endMutation()
+    }
   }
   if (method === 'POST' && path === '/bulk') {
     const body = await readJsonBody(req)

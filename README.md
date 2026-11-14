@@ -128,8 +128,10 @@ GET  /api/dsh-plugin-rack/updatelog   上一次更新的日志
 GET  /api/dsh-plugin-rack/registries  当前生效的 registry
 GET  /api/dsh-plugin-rack/removable   可以卸载的插件名单
 GET  /api/dsh-plugin-rack/inspect     安装预检（?spec=，只查不装）
+GET  /api/dsh-plugin-rack/fileplan    ?name= 本地 file: 依赖会升到哪个版本
 GET  /api/dsh-plugin-rack/job         正在跑的装包任务，或上一次的结果（running / finishedAt / interrupted）+ 待装队列
 POST /api/dsh-plugin-rack/job         { action: 'cancel' } 取消正在跑的那一次
+GET  /api/dsh-plugin-rack/summary     只读精简行，给脚本和 agent 用
 POST /api/dsh-plugin-rack/plugin      { entryId, enabled?, auto? }
 POST /api/dsh-plugin-rack/bulk        { enabled, scope, save?, cancel? }
 POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
