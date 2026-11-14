@@ -130,7 +130,9 @@ if (!seenRunning) fail('GET /job never reported the started update as running')
 else console.log('ok   /job reports the run while it is still going')
 
 // 4. It reaches a terminal state without anyone reading the original response.
-while (Date.now() < deadline) {
+//    Its own budget: the previous step may already have spent most of one.
+const settleDeadline = Date.now() + 20000
+while (Date.now() < settleDeadline) {
   job = await getJob()
   if (job !== null && job.finishedAt !== null) break
   await new Promise((done) => setTimeout(done, 200))
@@ -142,7 +144,10 @@ if (job.ok !== false) fail('this probe must fail (its registry is a closed port)
 else console.log('ok   the failure is reported, not swallowed')
 
 // 5. The result is on disk for the next panel visit.
-const jobFile = join(home, 'plugin-rack', 'job.json')
+// The plugin keeps one state directory per profile (see stateDir in index.js),
+// and the fake profile is basename(profile) === 'test'.
+const stateDir = join(home, 'plugin-rack', 'profiles', 'test')
+const jobFile = join(stateDir, 'job.json')
 if (!existsSync(jobFile)) fail('job.json was not written')
 else {
   const onDisk = JSON.parse(readFileSync(jobFile, 'utf8'))
@@ -169,8 +174,8 @@ else console.log('ok   an unknown job action answers 400')
 // 7. A queued update is picked up on its own, without any request driving it.
 //    The probe's registry is a closed port, so this run must leave a failed job
 //    and an empty queue behind: that is the watcher doing the work.
-const queueFile = join(home, 'plugin-rack', 'queue.json')
-mkdirSync(join(home, 'plugin-rack'), { recursive: true })
+const queueFile = join(stateDir, 'queue.json')
+mkdirSync(stateDir, { recursive: true })
 writeFileSync(queueFile, JSON.stringify([{ kind: 'updates', names: ['rack-job-probe'], queuedAt: new Date().toISOString() }], null, 2))
 const queuedJobId = job === null ? null : job.id
 let pumped = false

@@ -40,6 +40,7 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 - 更新由宿主执行：**点完就可以关掉面板**，pnpm 照样跑完。重新打开面板时，顶部会显示「后台更新中 · N 个插件」，跑完了补一条结果提示——不用守着这个界面，也不用去翻日志。卡住了可以点横幅右边的「取消」。
 - **会话正忙时也不白点**：需要下载的更新会先把附件取下来、核对 sha256，然后排队；宿主每 10 秒看一眼，等所有会话都空了就自己装上（下载过的东西不会重下）。排队期间横幅显示「已排队…」。
 - **网络不用你配**：下载会自动选路——`config.json` 里明确指定的代理 → 环境变量（`HTTPS_PROXY` / `ALL_PROXY`，`NO_PROXY` 会照规矩跳过）→ 系统代理（Windows 的 Internet 设置）→ 直连；一条走不通就换下一条，不会因为代理没开就整个更新失败。HTTP 代理和 SOCKS5 都支持，带用户名密码也行，查 GitHub 接口的部分同样走这些代理。
+- **pnpm 从哪来**：先找 PATH 上的 pnpm，再找 `%APPDATA%\npm`、`%LOCALAPPDATA%\pnpm`、`PNPM_HOME`、`~/.local/share/pnpm`、Homebrew 与系统级安装；Windows 的 `pnpm.cmd` / `pnpm.ps1` 会用 `cmd.exe` / `powershell` 包一层再跑。
 - 想固定某个代理，在数据目录写 `config.json`：`{ "download": { "proxy": "http://127.0.0.1:7897" } }`；写 `"off"` 就只直连；不写就是自动。
 - **断点续传**：连接断了按 `Range` 接着下，取消或失败后保留 `.part`，下次点更新从断的地方继续，不用重下 30 MB。总上限 30 分钟，30 秒没有数据即判定卡死——GitHub 偶尔会把连接挂住，宁可报错也不让面板一直转圈；下过的包按 sha256 复用，重试同一版本不会重新下载。
 - 「全部更新」勾选后批量执行，**执行前先把将运行的命令显示给你看**。
@@ -100,7 +101,8 @@ dsh plugin add dsh-plugin-rack
 ## 数据放在哪
 
 - 代码：插件自己的安装目录。
-- 运行时数据：`<DSH_HOME>/plugin-rack/state.json`（Windows 默认 `C:\Users\<你>\.dsh\plugin-rack\state.json`）—— 只存「哪些插件被标成了自动」和「面板自己创建过哪些配置覆盖」，几行 JSON。删掉它只会让自动清单重置，**不影响任何插件**。写盘失败时退化为内存态，页面会标注。
+- 运行时数据：`<DSH_HOME>/plugin-rack/profiles/<profile>/state.json`（Windows 默认 `C:\Users\<你>\.dsh\plugin-rack\profiles\desktop\state.json`）—— 只存「哪些插件被标成了自动」和「面板自己创建过哪些配置覆盖」，几行 JSON。删掉它只会让自动清单重置，**不影响任何插件**。写盘失败时退化为内存态，页面会标注。
+- **每个 profile 各存一份**：同一个 DSH 下开多个 profile 时，自动清单、正在跑的任务、待装队列互不串台；第一次升级到这个版本会把旧的 `plugin-rack/state.json` 复制过来一次。
 
 ## 结构
 

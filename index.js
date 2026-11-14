@@ -105,11 +105,50 @@ export const inject = ['webServer', 'pluginManager']
 /** @type {{version: number, seeded: boolean, auto: string[], created: string[]} | null} */
 let rosterState = null
 let storageMode = 'file'
+let profileStateKey = null
 
-function stateDir() {
+function stateBase() {
   const configured = typeof process.env.DSH_HOME === 'string' ? process.env.DSH_HOME.trim() : ''
   const home = configured.length > 0 ? configured : join(homedir(), '.dsh')
   return join(home, 'plugin-rack')
+}
+
+/**
+ * Where this profile keeps its roster, job and queue.
+ *
+ * One shared file meant the 自动 list of one profile drove the one-click buttons
+ * of another — the single most confusing way for a plugin manager to be wrong.
+ * The directory is keyed by the profile it belongs to; before apply() learns the
+ * profile, the old single directory is still used so nothing reads a half-set
+ * path.
+ */
+function stateDir() {
+  return profileStateKey === null ? stateBase() : join(stateBase(), 'profiles', profileStateKey)
+}
+
+/** Key the state by the profile it belongs to; carry the old roster over once. */
+function adoptProfile(ctx) {
+  let dir = null
+  try {
+    const facts = profileFacts(ctx)
+    dir = facts === null ? null : facts.dir
+  } catch {
+    dir = null
+  }
+  if (typeof dir !== 'string' || dir === '') return
+  const key = basename(dir).replace(/[^A-Za-z0-9._-]+/g, '-')
+  if (key === '' || key === '.' || key === '..') return
+  profileStateKey = key
+  try {
+    const target = join(stateDir(), 'state.json')
+    const legacy = join(stateBase(), 'state.json')
+    if (!existsSync(target) && existsSync(legacy)) {
+      mkdirSync(stateDir(), { recursive: true })
+      writeFileSync(target, readFileSync(legacy))
+    }
+  } catch {
+    // Losing the carry-over is survivable: the roster reseeds itself.
+  }
 }
 
 function stateFile() {
@@ -1636,7 +1675,12 @@ function pnpmScript() {
   if (shim !== null) {
     try {
       const real = realpathSync(shim)
+      // A real script: node can run it directly.
       if (/\.(c|m)?js$/i.test(real) && existsSync(real)) return real
+      // The standalone installer and a corepack shim both land on PATH as a
+      // wrapper (pnpm.exe, pnpm.cmd) that node cannot execute. They still work
+      // through their own launcher, so keep them instead of reporting "no pnpm".
+      if (process.platform === 'win32' && /\.(exe|cmd|bat|ps1)$/i.test(real) && existsSync(real)) return real
     } catch {
       // Not a symlink (or not ours to resolve): fall through.
     }
@@ -1658,6 +1702,34 @@ function pnpmScript() {
  * real node is also the interpreter pnpm actually expects.
  */
 let nodeRuntimeCache = null
+
+/**
+ * How to start pnpm, given whatever pnpmScript() resolved to.
+ *
+ * Exported for test/pnpm-command.mjs: the quoting rules here are the part that
+ * cannot be checked by reading the code, and a wrong quote is a silent failure
+ * that reads as "pnpm is broken".
+ */
+export function pnpmInvocation(script, args, execPath) {
+  const batch = /\.(cmd|bat)$/i.test(script)
+  const powershell = /\.ps1$/i.test(script)
+  const exe = /\.exe$/i.test(script)
+  if (batch) {
+    // cmd strips one outer pair of quotes under /s, so the whole command gets
+    // wrapped once and every part is quoted again inside.
+    const inner = [script, ...args].map(one => '"' + one + '"').join(' ')
+    return { command: process.env.ComSpec || 'cmd.exe', commandArgs: ['/d', '/s', '/c', '"' + inner + '"'], electron: false }
+  }
+  if (powershell) {
+    return {
+      command: 'powershell.exe',
+      commandArgs: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args],
+      electron: false,
+    }
+  }
+  if (exe) return { command: script, commandArgs: args, electron: false }
+  return { command: execPath, commandArgs: [script, ...args], electron: execPath === process.execPath }
+}
 
 
 function nodeRuntime() {
@@ -1750,8 +1822,9 @@ function runPnpm(script, args, cwd, timeoutMs = PNPM_TIMEOUT) {
       return
     }
     const env = { ...process.env }
-    if (execPath === process.execPath) env.ELECTRON_RUN_AS_NODE = '1'
-    const child = spawn(execPath, [script, ...args], {
+    const invocation = pnpmInvocation(script, args, execPath)
+    if (invocation.electron) env.ELECTRON_RUN_AS_NODE = '1'
+    const child = spawn(invocation.command, invocation.commandArgs, {
       cwd,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -2402,7 +2475,12 @@ function downloadRoutes(url) {
     add('direct', null)
     return routes
   }
-  const skip = noProxyMatch(target.hostname, process.env.NO_PROXY ?? process.env.no_proxy)
+  // A host on this machine is not reachable through a proxy and a CONNECT to it
+  // stalls. Only auto-detected routes are dropped: a proxy the user configured by
+  // hand is honoured even for a local address (that is how the code is tested).
+  const skip =
+    (mode === 'auto' && isLocalHost(target.hostname)) ||
+    noProxyMatch(target.hostname, process.env.NO_PROXY ?? process.env.no_proxy)
   if (mode !== 'auto') {
     const explicit = parseProxy(mode)
     if (explicit !== null && !skip) add(explicit.label, explicit)
@@ -2421,6 +2499,20 @@ function downloadRoutes(url) {
   }
   add('direct', null)
   return routes
+}
+
+/** Hosts only this machine can reach — a proxy could only stall on them. */
+function isLocalHost(hostname) {
+  const host = hostname.toLowerCase()
+  if (host === 'localhost' || host === '::1' || host === '[::1]' || host.endsWith('.localhost')) return true
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (v4 === null) return false
+  const first = Number(v4[1])
+  const second = Number(v4[2])
+  if (first === 127 || first === 10) return true
+  if (first === 192 && second === 168) return true
+  if (first === 172 && second >= 16 && second <= 31) return true
+  return first === 169 && second === 254
 }
 
 function connectTcp(host, port, timeoutMs) {
@@ -3713,6 +3805,7 @@ async function handle(ctx, req, res) {
 }
 
 export function apply(ctx) {
+  adoptProfile(ctx)
   ctx.effect(() =>
     ctx.webServer.register({
       kind: 'prefix',
