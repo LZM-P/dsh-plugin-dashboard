@@ -8,7 +8,10 @@
 * text=auto eol=lf
 
 # Files where the exact bytes matter: they are served to a browser or copied
-# verbatim by tooling, so no newline translation.
+# verbatim by tooling. `text` here means "still text, still LF in the repo" --
+# it does NOT opt out of newline translation. To truly leave a file's bytes
+# alone you would use `-text`; nothing here needs that, these entries only pin
+# the text attribute explicitly so a future wildcard cannot flip them binary.
 *.svg  text
 *.json text
 *.yml  text

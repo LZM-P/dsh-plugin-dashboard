@@ -171,6 +171,7 @@ window.__ModuleLoader__.load({
         jobDone: 'Background update finished',
         jobFailed: 'Background update failed',
         jobInterrupted: 'The last update never finished (host restarted or interrupted)',
+        connLost: 'The host reloaded its config to apply the change; refresh if the list looks stale',
         jobCancel: 'Cancel',
         jobQueued: 'Queued: downloaded and verified, installs by itself once a session is free ({n})',
         updateRolledBack: 'Rolled back',
@@ -348,6 +349,7 @@ window.__ModuleLoader__.load({
         jobDone: '后台更新已完成',
         jobFailed: '后台更新失败',
         jobInterrupted: '上次更新没跑完（宿主重启或中断）',
+        connLost: '宿主为应用这次改动重载了配置，连接断了一下；列表没更新就刷新页面',
         jobCancel: '取消',
         jobQueued: '已排队：附件已下载校验，会话一空闲就会自动安装（{n} 个）',
         updateRolledBack: '已回滚',
@@ -403,6 +405,27 @@ window.__ModuleLoader__.load({
     }
 
     const DEFAULT_TIMEOUT_MS = 120000;
+
+    /**
+     * 两份列表的「哪一行是开着的」是否一致。
+     *
+     * 只比 enabled，不比别的字段：重载之后 fiber id、phase、详情缓存都可能变，
+     * 但「用户想关掉的那几个确实关掉了」才是判断这次操作成没成的依据。
+     */
+    function sameEnabledMap(left, right) {
+      if (left === null || right === null) return false;
+      if (!Array.isArray(left.rows) || !Array.isArray(right.rows)) return false;
+      const flat = new Map();
+      for (const row of left.rows) flat.set(row.entryId, row.enabled === true);
+      for (const row of right.rows) {
+        const want = flat.get(row.entryId);
+        // 只比两份都在的行：重载期间某些行可能短暂消失，那不是「操作失败」。
+        if (want === undefined) continue;
+        if (want !== (row.enabled === true)) return false;
+      }
+      return true;
+    }
+
     // The Host can legitimately sit on a write for a long time: it waits for an
     // idle session (3 min), runs pnpm (25 min) and, if that fails, restores the
     // manifests and re-syncs node_modules with another pnpm run (25 min).
@@ -886,7 +909,17 @@ window.__ModuleLoader__.load({
             if (key === undefined) setBusy(true);
             else setPending((prev) => ({ ...prev, [key]: true }));
             setToast(null);
-            if (optimistic) setData((prev) => (prev === null ? prev : optimistic(prev)));
+            // 记下「操作成功的话，列表应该长成什么样」。catch 里拿它判断这次
+            // 失败是不是假失败：宿主重载配置会重置连接，但改动已经生效了。
+            let expected = null;
+            if (optimistic) {
+              setData((prev) => {
+                if (prev === null) return prev;
+                const next = optimistic(prev);
+                expected = next;
+                return next;
+              });
+            }
             try {
               const next = await call();
               if (next !== null && typeof next === 'object' && next.patch === true) {
@@ -911,8 +944,19 @@ window.__ModuleLoader__.load({
               }
               return next;
             } catch (failure) {
-              setToast({ kind: 'err', text: label + ': ' + (failure instanceof Error ? failure.message : String(failure)) });
-              await load();
+              // 关掉/打开一个插件会让宿主重载配置，连接被重置是常见的正常收尾，
+              // 操作其实已经生效了。先自愈再判断：如果重新读回来的状态和乐观更新
+              // 预测的一致，就别弹红错——用户实测过「明明成功了却报 unreachable」。
+              const message = failure instanceof Error ? failure.message : String(failure);
+              const healed = await load();
+              const settled = expected !== null && healed !== null && sameEnabledMap(expected, healed);
+              if (settled) {
+                // 状态已经对上了：这不是错误，静默收尾。
+              } else if (message === 'unreachable' || message === 'timeout') {
+                setToast({ kind: 'warn', text: label + ': ' + t('connLost') });
+              } else {
+                setToast({ kind: 'err', text: label + ': ' + message });
+              }
               return null;
             } finally {
               if (key === undefined) setBusy(false);

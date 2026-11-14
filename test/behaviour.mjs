@@ -93,6 +93,29 @@ console.log('idle gate reporting')
   check('ungated path sets gated = false', body.includes('releaseUngated.gated = false'))
   check('gated path sets gated = true', body.includes('releaseAll.gated = true'))
   check('ungated path returns early', /if \(!available\)[^]*?return releaseUngated/.test(body))
+  // Every entry point that takes the maintenance gate must report the flag, not
+  // just the batch updater -- otherwise the same machine says "I waited" for a
+  // bulk update and says nothing for a single install.
+  check('applyUpdates reports unguarded', source.includes('unguarded: true'))
+  const guardedPnpm = extract('guardedPnpm')
+  check('guardedPnpm computes the flag', guardedPnpm.includes('release.gated === false'))
+  check('guardedPnpm marks its result', guardedPnpm.includes('markUnguarded('))
+  const fileUpgrade = extract('applyFileUpgrade')
+  check('applyFileUpgrade computes the flag', fileUpgrade.includes('release.gated === false'))
+  check('applyFileUpgrade marks its result', fileUpgrade.includes('markUnguarded('))
+}
+
+console.log('connection reset is not reported as failure')
+{
+  const client = readFileSync(join(root, 'client.js'), 'utf8')
+  check(
+    'the optimistic state is captured as the expectation',
+    client.includes('expected = next'),
+  )
+  check('the healed state is compared before toasting', client.includes('sameEnabledMap(expected, healed)'))
+  check('a settled change stays silent', /if \(settled\) \{/.test(client))
+  check('a lost connection downgrades to a warning', client.includes("t('connLost')"))
+  check('sameEnabledMap ignores rows that vanished mid-reload', client.includes('if (want === undefined) continue'))
 }
 
 console.log('write gate')

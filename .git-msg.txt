@@ -1,25 +1,33 @@
-fix: search by patchId, write gate for headless clients, honest idle-gate reporting
+fix: test fixtures, idle-gate coverage on every path, honest connection errors
 
-Four follow-ups from the review.
+Blocking: test/job-background.mjs had two bare POSTs (the /updates kickoff and
+postJob) that the new write gate correctly refused with 403, so the update
+never started, GET /job never saw a running job, and the test failed before its
+deliberate socket destroy produced an ECONNRESET stack. Both call sites now
+send x-dsh-plugin-rack: 1, like the panel does. npm test now runs behaviour.mjs
+too; it was only wired into npm run check, so the 27 new assertions never ran
+on the command people actually type.
 
-- Search now matches patchId and description, so a row whose moduleName is a
-  file:// path (cc-safety-net) is findable by package name, and a plugin
-  remembered by its Chinese label is findable by that.
-- A POST that carries no browser provenance is now refused unless the caller
-  sends x-dsh-plugin-rack: 1. The Host/Origin gates only prove a request was
-  not spoofed by another site; a request with no Origin at all passes them,
-  which is exactly what curl -X POST looks like -- so any local script could
-  uninstall plugins or install arbitrary npm packages without a browser. The
-  panel sends the header itself, and README documents it for scripted use.
-- holdAgents no longer degrades silently. Without an agents service there is
-  nothing to hold, and the run proceeded indistinguishably from a run that
-  waited and found everyone idle. The release function now carries .gated, and
-  the update result reports unguarded: true with a message, plus an explicit
-  idle-gate line in the update log.
-- A bulk run passes the row it already read into setOne, which otherwise calls
-  readRows() -- a full listPlugins() over ~200 loader entries -- on every row.
+unguarded now covers every path that takes the maintenance gate. It was only
+computed in applyUpdates, so applyFileUpgrade and guardedPnpm (which serves
+repull and pin) would still run with no idle guarantee and say nothing about it
+-- the same machine would explain itself for a batch update and stay silent for
+a single install. Both compute release.gated and pass their result through
+markUnguarded(); the file-upgrade log carries an idle-gate line like the batch
+update does.
 
-Also adds .gitattributes (text=auto eol=lf) so a Windows checkout stops
-rewriting whole files, and test/behaviour.mjs: 27 assertions over the decision
-functions behind these bugs (package naming, cancellation truth, idle-gate
-flag, write gate, migration list, rollback non-cancellability).
+A reset connection no longer reports a red error for a change that applied.
+run() captures the optimistic result as the expectation, and on failure it
+heals first and compares enabled-ness of the rows present in both snapshots
+(rows that vanish mid-reload are ignored). If they agree the change went
+through and nothing is shown; a genuine transport failure downgrades to a
+warning that says the host reloaded its config to apply the change, instead of
+"unreachable".
+
+Two hygiene fixes from the review: .git-msg.txt is removed (it was committed by
+accident in 8cc3a6e and had been sitting as an uncommitted deletion), and the
+.gitattributes comment no longer claims `text` opts out of newline translation
+-- it does not, those entries only pin the attribute against a future wildcard.
+README 2b no longer implies the write gate stops local scripts: it says plainly
+that the header is a declaration of intent, not authentication, and that a
+token would be needed to actually defend against same-machine scripts.

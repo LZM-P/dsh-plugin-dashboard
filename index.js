@@ -355,6 +355,25 @@ function assertNotCancelled(job) {
   if (activeJobAbort !== null && activeJobAbort.signal.aborted) throw new Error('cancelled by the user')
 }
 
+/**
+ * 给结果挂上「这次没有维护门」的事实。
+ *
+ * applyUpdates 有自己的 unguarded 处理；applyExtras / applyFileUpgrade 这些
+ * 走另一条路的入口也必须说同一句话，否则同一台机器上「批量更新会告诉你没等空闲、
+ * 单装一个却不说」—— 用户没法判断哪次是安全的。
+ */
+function markUnguarded(result, unguarded) {
+  if (unguarded !== true) return result
+  if (result === null || typeof result !== 'object') return result
+  return Object.assign({}, result, {
+    unguarded: true,
+    message:
+      typeof result.message === 'string' && result.message.length > 0
+        ? result.message + '（宿主没有 agents 服务：这次没等会话空闲就改了 node_modules）'
+        : '宿主没有 agents 服务：这次没等会话空闲就改了 node_modules',
+  })
+}
+
 /** 正在跑的任务，或上一次的结果；finishedAt 为空但已不在跑 = 被宿主重启掐断了。 */
 function jobStatus() {
   const job = activeJob !== null ? activeJob : readJob()
@@ -3157,6 +3176,8 @@ async function guardedPnpm(ctx, facts, script, args) {
   } finally {
     release()
   }
+  // 宿主没有 agents 服务时维护门是空的：能装，但没等会话空闲。
+  const unguarded = release !== null && release.gated === false
   if (outcome.code !== 0) {
     for (const [file, text] of backup) writeFileSync(file, text, 'utf8')
     return {
@@ -3180,7 +3201,10 @@ async function guardedPnpm(ctx, facts, script, args) {
   } catch {
     // A busy agent leaves the restart advice in place.
   }
-  return { ok: true, output: outcome.output.slice(-800), hotSwap: swap, restart: swap.ok !== true }
+  return markUnguarded(
+    { ok: true, output: outcome.output.slice(-800), hotSwap: swap, restart: swap.ok !== true },
+    unguarded,
+  )
 }
 
 /**
@@ -3350,6 +3374,8 @@ async function applyFileUpgrade(ctx, name) {
       message: '附件已下载并校验，先排队；会话一空闲就自动装上',
     }
   }
+  // 宿主没有 agents 服务时维护门是空的：能装，但没有「等会话空闲」这层保护。
+  const unguarded = release !== null && release.gated === false
 
   let outcome = null
   try {
@@ -3414,21 +3440,24 @@ async function applyFileUpgrade(ctx, name) {
   }
   writeUpdateLog(
     `OK ${name}`,
-    `action: file-upgrade\n${plan.current} -> ${plan.target.version}\nasset: ${plan.target.asset.name} (${bytes} bytes)\nsha256: ${plan.target.sha256}\nhot swap: ${swap.ok === true ? 'ok' : swap.reason}`,
+    `action: file-upgrade\n${plan.current} -> ${plan.target.version}\nasset: ${plan.target.asset.name} (${bytes} bytes)\nsha256: ${plan.target.sha256}\nhot swap: ${swap.ok === true ? 'ok' : swap.reason}\nidle gate: ${unguarded ? 'unavailable' : 'held'}`,
   )
-  return {
-    ok: true,
-    action: 'file-upgrade',
-    name,
-    from: plan.current,
-    to: plan.target.version,
-    asset: plan.target.asset.name,
-    bytes,
-    sha256: plan.target.sha256,
-    output: outcome.output.slice(-800),
-    hotSwap: swap,
-    restart: swap.ok !== true,
-  }
+  return markUnguarded(
+    {
+      ok: true,
+      action: 'file-upgrade',
+      name,
+      from: plan.current,
+      to: plan.target.version,
+      asset: plan.target.asset.name,
+      bytes,
+      sha256: plan.target.sha256,
+      output: outcome.output.slice(-800),
+      hotSwap: swap,
+      restart: swap.ok !== true,
+    },
+    unguarded,
+  )
 }
 
 async function applyExtras(ctx, name, action) {

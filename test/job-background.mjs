@@ -99,7 +99,15 @@ await new Promise((resolve, reject) => {
   const body = JSON.stringify({ names: ['rack-job-probe'] })
   const call = request_http(
     base + '/updates',
-    { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } },
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        // 写接口要求声明意图（面板自己发请求时也带这个头）。裸 POST 会被 403。
+        'x-dsh-plugin-rack': '1',
+      },
+    },
     (response) => {
       // A panel that is closed never reads this; drain and still destroy.
       response.resume()
@@ -159,7 +167,7 @@ else {
 async function postJob(payload) {
   const response = await fetch(base + '/job', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-dsh-plugin-rack': '1' },
     body: JSON.stringify(payload),
   })
   return response.status

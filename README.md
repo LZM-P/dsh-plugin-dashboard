@@ -178,7 +178,11 @@ POST /api/dsh-plugin-rack/uninstall   { name }
 
 1. **网络暴露面**：API 只在 `127.0.0.1` / `localhost` / `::1` 上可达。宿主的 web server 本来就只绑 loopback，所以外网碰不到这个端口。
 2. **Host / Origin 校验**：每个请求都先过两道闸——Host 头必须指向 loopback，Origin 头（如果存在）也必须解析到 loopback。这挡的是同机浏览器里的恶意网页：它无法用 `<img>` 或 `fetch` 跨站调用你的 API（DNS rebinding / CSRF 都被这两道闸拦下）。
-2b. **写操作还要求"你确实是从面板来的"**：`POST` 除了要 `application/json`，还必须带 `Origin`、或 `Sec-Fetch-Site: same-origin`、或显式加上 `x-dsh-plugin-rack: 1` 请求头。原因是前两道闸对"完全不带 Origin"的请求是放行的，而 `curl -X POST` 正好属于这一类——不加这道门，本机任何脚本都能卸载插件、装任意 npm 包，连浏览器都不用开。面板自己永远带这个头；你要写脚本调接口时也带一个就行：
+2b. **写操作还要求"你确实是从面板来的"**：`POST` 除了要 `application/json`，还必须带 `Origin`、或 `Sec-Fetch-Site: same-origin`、或显式加上 `x-dsh-plugin-rack: 1` 请求头。
+
+   这道门挡的是**无意的跨站 POST**（比如别处一个表单顺手打过来、或者某个页面被 XSS 后盲发请求），它对「完全不带 Origin」的请求本来是不设防的，而 `curl -X POST` 正好属于这一类。
+
+   它**不是鉴权**：本机任何拿到这个端口的脚本，加一行请求头就能过。真要防住同机脚本，需要引入 token/随机口令——目前没有做，也不假装做了。面板自己永远带这个头；写脚本调接口时也带一个：
    ```bash
    curl -X POST http://127.0.0.1:9546/api/dsh-plugin-rack/bulk \
      -H 'content-type: application/json' \
