@@ -175,6 +175,20 @@ console.log('connection reset is not reported as failure')
   })())
 }
 
+console.log('extras rows do not offer an upgrade when there is none')
+{
+  const client = readFileSync(join(root, 'client.js'), 'utf8')
+  // 上一版的 bug：disabled 检查了 newer，按钮文字没检查，于是「v2.8.3 → v2.8.3」
+  // 旁边挂着一个写着「一键升级」的灰按钮。文字和 disabled 必须用同一个判据。
+  check('the file upgrade button disables on !newer', client.includes("disabled: extrasBusy !== '' || newer !== true"))
+  check('the file upgrade label also respects newer', /newer !== true\s*\n\s*\?\s*\/\/[\s\S]{0,400}?t\('extrasNoNewer'\)/.test(client))
+  check('an unchanged file version is not shown as an arrow', client.includes('const same ='))
+  check('identical versions collapse to a single label', client.includes("t('extrasNoNewer')"))
+  // 有更新的排前面
+  check('rows with an update sort first', client.includes('.filter((row) => extrasNewer(row))'))
+  check('up-to-date rows are dimmed', client.includes("' pd-update-row-done'"))
+}
+
 console.log('write gate')
 {
   // A POST that carries no browser provenance must be refused unless the caller

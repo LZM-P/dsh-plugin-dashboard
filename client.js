@@ -141,6 +141,7 @@ window.__ModuleLoader__.load({
         extrasRepull: 'Re-pull',
         extrasPin: 'Pin to a version',
         extrasNoNewer: 'up to date',
+        extrasAllCurrent: '{n} listed below are already up to date — nothing to do for them',
         extrasLink: 'local link',
         extrasFile: 'local tarball',
         extrasOpenRelease: 'Open the release page',
@@ -314,6 +315,7 @@ window.__ModuleLoader__.load({
         extrasRepull: '重新拉取',
         extrasPin: '改为按版本安装',
         extrasNoNewer: '已是最新',
+        extrasAllCurrent: '下面 {n} 个已经是最新，不需要手动处理',
         extrasLink: '本地软链',
         extrasFile: '本地文件包',
         extrasOpenRelease: '打开发布页',
@@ -709,6 +711,9 @@ window.__ModuleLoader__.load({
       '.pd-update-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
       '.pd-hint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
       '.pd-update-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;cursor:pointer}',
+      // 已经是最新的行：压暗一档，让"需要动手的"和"不用管的"一眼分开。
+      '.pd-update-row-done{opacity:.55;cursor:default}',
+      '.pd-update-row-done:hover{opacity:.8}',
       '.pd-update-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-update-name{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.pd-update-ver{flex:none;font-size:12px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
@@ -2221,15 +2226,20 @@ window.__ModuleLoader__.load({
           } else if (row.kind === 'link') {
             compare = t('extrasLink');
           } else if (row.latestRelease !== null && typeof row.latestRelease === 'object') {
-            compare =
-              'v' + String(row.current ?? '?') + ' → v' + row.latestRelease.version + ' · ' + t('extrasFile');
+            // 两边版本一样时别再写成「v2.8.3 → v2.8.3」：那不是对比，是噪音。
+            const same =
+              typeof row.current === 'string' &&
+              String(row.latestRelease.version ?? '') === row.current;
+            compare = same
+              ? 'v' + String(row.current) + ' · ' + t('extrasFile') + ' · ' + t('extrasNoNewer')
+              : 'v' + String(row.current ?? '?') + ' → v' + row.latestRelease.version + ' · ' + t('extrasFile');
           } else {
             // file: 装的本地压缩包；没找到仓库或对方没发过 Release，就只报本地版本
             compare = (row.current ? 'v' + row.current + ' · ' : '') + t('extrasFile');
           }
           return h(
             'div',
-            { key: row.name, className: 'pd-update-row' },
+            { key: row.name, className: 'pd-update-row' + (newer === true ? '' : ' pd-update-row-done') },
             h('span', { className: 'pd-update-name' }, row.name),
             h('span', { className: 'pd-update-ver' }, compare),
             row.kind === 'github'
@@ -2277,13 +2287,18 @@ window.__ModuleLoader__.load({
                         },
                         busyHere
                           ? t('fileUpgradeRunning')
-                          : filePlan !== null &&
-                              filePlan.name === row.name &&
-                              filePlan.status === 'ready' &&
-                              filePlan.plan !== null &&
-                              filePlan.plan.ok === true
-                            ? t('fileUpgradeConfirm')
-                            : t('fileUpgrade'),
+                          : newer !== true
+                            ? // 已经是最新版（或读不到新版）：按钮是禁用的，文字也不能
+                              // 再写「一键升级」，否则用户看到「v2.8.3 → v2.8.3」旁边
+                              // 挂着一个升级按钮，会以为面板算错了。
+                              t('extrasNoNewer')
+                            : filePlan !== null &&
+                                filePlan.name === row.name &&
+                                filePlan.status === 'ready' &&
+                                filePlan.plan !== null &&
+                                filePlan.plan.ok === true
+                              ? t('fileUpgradeConfirm')
+                              : t('fileUpgrade'),
                       ),
                       h(
                         'a',
@@ -2327,7 +2342,15 @@ window.__ModuleLoader__.load({
           );
         };
 
-        const extrasRows = extras === null || extras.ok !== true ? [] : extras.rows || [];
+        const extrasAll = extras === null || extras.ok !== true ? [] : extras.rows || [];
+        // 有更新的排前面，已经最新的沉底。这样「其他安装方式」这一栏先回答
+        // 「有没有东西需要我动手」，而不是让人逐行去比两串版本号。
+        const extrasNewer = (row) =>
+          row.kind === 'github' ? row.head !== null && row.installedCommit !== row.head.sha : row.hasUpdate === true;
+        const extrasRows = extrasAll
+          .filter((row) => extrasNewer(row))
+          .concat(extrasAll.filter((row) => !extrasNewer(row)));
+        const extrasCurrentCount = extrasAll.filter((row) => !extrasNewer(row)).length;
 
         const installPanel = h(
           'div',
@@ -2425,7 +2448,18 @@ window.__ModuleLoader__.load({
               ? h('div', { className: 'pd-empty' }, String(extras.message || 'error'))
               : extrasRows.length === 0
                 ? h('div', { className: 'pd-empty' }, t('updateNone'))
-                : extrasRows.map(extraRowNode),
+                : [
+                    ...extrasRows.map(extraRowNode),
+                    // 已经最新的那些沉在下面，补一句说明它们不需要动手，
+                    // 免得用户以为"排后面的没检查"。
+                    extrasCurrentCount > 0
+                      ? h(
+                          'div',
+                          { key: '__current', className: 'pd-hint' },
+                          t('extrasAllCurrent', { n: extrasCurrentCount }),
+                        )
+                      : null,
+                  ],
           extrasRows.some((row) => row.kind === 'github') ? h('div', { className: 'pd-hint' }, t('extrasWarn')) : null,
           extraLog === null
             ? null
