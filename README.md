@@ -1,4 +1,4 @@
-# dsh-plugin-dashboard · 插件管理台
+# dsh-plugin-rack · 插件管理
 
 DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个开关直接开关，更新完不用重启。**
 
@@ -31,7 +31,7 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 - **手动 / 自动**标记：只有标为「自动」的插件才会被「一键全部开启 / 关闭」影响。标成手动的，一键操作永远不会碰它。
 - 每页有自己的一套批量按钮：一键全部开启、一键全部关闭、全部设为自动、全部设为手动，**只对当前这一页生效**。
 - 批量操作前在面板内弹出确认条（不是浏览器弹窗），写清楚要动几个、动哪些。
-- 另有**「整批一次」版本**的一键开关：只写一次 profile 配置文件、不逐个去动插件。宿主看到文件变了会**一次性重载整批**（约 0.4 秒写完），比逐个卸载+加载快得多。适合「先全关 → 去更新 → 再重启」这个流程。
+- 每行最左有一盏**状态灯**：绿=运行中、黄=加载中、红=加载失败、灰=未启用、空心=只读核心组件。加载失败的行整行淡红，不用展开就能看见。
 - 第一次打开时，「自动」名单默认只包含这个 profile 安装的第三方插件，并且排除本面板自己；内置核心组件一律「手动」，所以一键全关不会把 harness 拆掉。
 
 ### 更新
@@ -74,23 +74,23 @@ node test/self-check.mjs
 在 DSH 的插件管理界面里安装，或者：
 
 ```bash
-dsh plugin add dsh-plugin-dashboard
+dsh plugin add dsh-plugin-rack
 ```
 
-装好后侧边栏会出现「插件管理台」。
+装好后侧边栏会出现「插件管理」。
 
 ## 数据放在哪
 
 - 代码：插件自己的安装目录。
-- 运行时数据：`<DSH_HOME>/plugin-dashboard/state.json`（Windows 默认 `C:\Users\<你>\.dsh\plugin-dashboard\state.json`）—— 只存「哪些插件被标成了自动」和「面板自己创建过哪些配置覆盖」，几行 JSON。删掉它只会让自动清单重置，**不影响任何插件**。写盘失败时退化为内存态，页面会标注。
+- 运行时数据：`<DSH_HOME>/plugin-rack/state.json`（Windows 默认 `C:\Users\<你>\.dsh\plugin-rack\state.json`）—— 只存「哪些插件被标成了自动」和「面板自己创建过哪些配置覆盖」，几行 JSON。删掉它只会让自动清单重置，**不影响任何插件**。写盘失败时退化为内存态，页面会标注。
 
 ## 结构
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.js` | 宿主端：注册 `/api/dsh-plugin-dashboard` 前缀路由，负责读取插件状态、批量操作、更新与安装卸载 |
+| `index.js` | 宿主端：注册 `/api/dsh-plugin-rack` 前缀路由，负责读取插件状态、批量操作、更新与安装卸载 |
 | `client.js` | 客户端：侧边栏图标 + `main` 面板的界面（无需构建步骤，浏览器直接加载） |
-| `cordis.patch.yml` | bundle 补丁，插入 `plugin-dashboard` 这一行 |
+| `cordis.patch.yml` | bundle 补丁，插入 `plugin-rack` 这一行 |
 | `locale/{en,zh}.json` | 插件名与描述（插件管理页展示用） |
 | `icon.svg` | 插件图标 |
 | `test/self-check.mjs` | 自检脚本：词条对照、路由对照、hook 顺序、调试残留 |
@@ -100,23 +100,23 @@ dsh plugin add dsh-plugin-dashboard
 宿主端只暴露一个同源前缀路由，客户端直接用 `fetch` 调用，因此**不依赖** `remoteAccess` 对 `pluginManager/*` 的授权策略：
 
 ```
-GET  /api/dsh-plugin-dashboard/ping        存活探测，不碰任何服务
-GET  /api/dsh-plugin-dashboard/            ping 的别名
-GET  /api/dsh-plugin-dashboard/state       全部插件行 + 自动名单 + 批量进度
-GET  /api/dsh-plugin-dashboard/detail      某个插件的包信息（?entryId=）
-GET  /api/dsh-plugin-dashboard/updates     检查更新（按精确版本锁定的依赖）
-GET  /api/dsh-plugin-dashboard/extras      其他安装方式（github / tar 包 / 本地文件 / 软链）
-GET  /api/dsh-plugin-dashboard/updatelog   上一次更新的日志
-GET  /api/dsh-plugin-dashboard/registries  当前生效的 registry
-GET  /api/dsh-plugin-dashboard/removable   可以卸载的插件名单
-GET  /api/dsh-plugin-dashboard/inspect     安装预检（?spec=，只查不装）
-POST /api/dsh-plugin-dashboard/plugin      { entryId, enabled?, auto? }
-POST /api/dsh-plugin-dashboard/bulk        { enabled, scope, save?, cancel? }
-POST /api/dsh-plugin-dashboard/roster      { mode: 'group', scope, auto }
-POST /api/dsh-plugin-dashboard/updates     { names: [...] }
-POST /api/dsh-plugin-dashboard/extras      { name, action }
-POST /api/dsh-plugin-dashboard/install     { spec }
-POST /api/dsh-plugin-dashboard/uninstall   { name }
+GET  /api/dsh-plugin-rack/ping        存活探测，不碰任何服务
+GET  /api/dsh-plugin-rack/            ping 的别名
+GET  /api/dsh-plugin-rack/state       全部插件行 + 自动名单 + 批量进度
+GET  /api/dsh-plugin-rack/detail      某个插件的包信息（?entryId=）
+GET  /api/dsh-plugin-rack/updates     检查更新（按精确版本锁定的依赖）
+GET  /api/dsh-plugin-rack/extras      其他安装方式（github / tar 包 / 本地文件 / 软链）
+GET  /api/dsh-plugin-rack/updatelog   上一次更新的日志
+GET  /api/dsh-plugin-rack/registries  当前生效的 registry
+GET  /api/dsh-plugin-rack/removable   可以卸载的插件名单
+GET  /api/dsh-plugin-rack/inspect     安装预检（?spec=，只查不装）
+POST /api/dsh-plugin-rack/plugin      { entryId, enabled?, auto? }
+POST /api/dsh-plugin-rack/bulk        { enabled, scope, save?, cancel? }
+POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
+POST /api/dsh-plugin-rack/updates     { names: [...] }
+POST /api/dsh-plugin-rack/extras      { name, action }
+POST /api/dsh-plugin-rack/install     { spec }
+POST /api/dsh-plugin-rack/uninstall   { name }
 ```
 
 ### `save` 模式

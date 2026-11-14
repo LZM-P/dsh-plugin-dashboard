@@ -6,25 +6,25 @@
  * means the UI and any future agent tool share a single implementation, and it
  * avoids depending on the Client-side Remote access policy for `pluginManager`.
  *
- *   GET  /api/dsh-plugin-dashboard/            alias of /ping, so a bare URL answers
- *   GET  /api/dsh-plugin-dashboard/ping        liveness, touches no service
- *   GET  /api/dsh-plugin-dashboard/state       every plugin row + the roster
- *   GET  /api/dsh-plugin-dashboard/detail      ?entryId=  one row + its package.json
- *   GET  /api/dsh-plugin-dashboard/updates     check every exact-pinned dep against its registry
- *   POST /api/dsh-plugin-dashboard/updates     { names: [...] }  install those exact versions
- *   GET  /api/dsh-plugin-dashboard/extras      deps that are not exact versions (link / github / tarball / file)
- *   POST /api/dsh-plugin-dashboard/extras      { name, action: 'repull' | 'pin' | 'file-upgrade' }
- *   GET  /api/dsh-plugin-dashboard/updatelog   the last update attempt, as written to disk
- *   GET  /api/dsh-plugin-dashboard/registries  the registry the host resolves + whether GITHUB_TOKEN is set
- *   GET  /api/dsh-plugin-dashboard/removable   bundles the host will let us uninstall
- *   GET  /api/dsh-plugin-dashboard/inspect     ?spec=  preview only, installs nothing
- *   GET  /api/dsh-plugin-dashboard/fileplan    ?name=  what a local `file:` dep would upgrade to
- *   POST /api/dsh-plugin-dashboard/install     { spec }  through pluginManager.installBundle
- *   POST /api/dsh-plugin-dashboard/uninstall   { name }  through pluginManager.removeBundle
- *   POST /api/dsh-plugin-dashboard/plugin      { entryId, enabled?, auto? }
- *   POST /api/dsh-plugin-dashboard/bulk        { enabled, scope?, save?, cancel? }
- *   POST /api/dsh-plugin-dashboard/roster      { mode: 'group', scope, auto }
- *   GET  /api/dsh-plugin-dashboard/summary     read-only rows for scripts and future agent tools
+ *   GET  /api/dsh-plugin-rack/            alias of /ping, so a bare URL answers
+ *   GET  /api/dsh-plugin-rack/ping        liveness, touches no service
+ *   GET  /api/dsh-plugin-rack/state       every plugin row + the roster
+ *   GET  /api/dsh-plugin-rack/detail      ?entryId=  one row + its package.json
+ *   GET  /api/dsh-plugin-rack/updates     check every exact-pinned dep against its registry
+ *   POST /api/dsh-plugin-rack/updates     { names: [...] }  install those exact versions
+ *   GET  /api/dsh-plugin-rack/extras      deps that are not exact versions (link / github / tarball / file)
+ *   POST /api/dsh-plugin-rack/extras      { name, action: 'repull' | 'pin' | 'file-upgrade' }
+ *   GET  /api/dsh-plugin-rack/updatelog   the last update attempt, as written to disk
+ *   GET  /api/dsh-plugin-rack/registries  the registry the host resolves + whether GITHUB_TOKEN is set
+ *   GET  /api/dsh-plugin-rack/removable   bundles the host will let us uninstall
+ *   GET  /api/dsh-plugin-rack/inspect     ?spec=  preview only, installs nothing
+ *   GET  /api/dsh-plugin-rack/fileplan    ?name=  what a local `file:` dep would upgrade to
+ *   POST /api/dsh-plugin-rack/install     { spec }  through pluginManager.installBundle
+ *   POST /api/dsh-plugin-rack/uninstall   { name }  through pluginManager.removeBundle
+ *   POST /api/dsh-plugin-rack/plugin      { entryId, enabled?, auto? }
+ *   POST /api/dsh-plugin-rack/bulk        { enabled, scope?, save?, cancel? }
+ *   POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
+ *   GET  /api/dsh-plugin-rack/summary     read-only rows for scripts and future agent tools
  *
  * Bodies must be `application/json` (anything else answers 415), a known path
  * with the wrong verb answers 405, and only one write operation runs at a time
@@ -58,10 +58,15 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 
-const ROUTE_PREFIX = '/api/dsh-plugin-dashboard'
+const ROUTE_PREFIX = '/api/dsh-plugin-rack'
 const require = createRequire(import.meta.url)
-const VERSION = '1.0.0'
-const SELF = 'dsh-plugin-dashboard'
+const VERSION = '0.1.0'
+// The package was called dsh-plugin-dashboard before the public release. Keep
+// the old name recognised so a half-migrated install still treats the panel as
+// itself — otherwise "turn everything off" would switch off the very route
+// answering that request.
+const SELF = 'dsh-plugin-rack'
+const SELF_NAMES = [SELF, 'dsh-plugin-dashboard']
 
 /** Known routes and their verbs, so a wrong verb answers 405 instead of 404. */
 const ROUTES = {
@@ -86,7 +91,7 @@ const ROUTES = {
   '/summary': ['GET'],
 }
 
-export const name = 'plugin-dashboard'
+export const name = 'plugin-rack'
 export const inject = ['webServer', 'pluginManager']
 
 /** @type {{version: number, seeded: boolean, auto: string[], created: string[]} | null} */
@@ -96,7 +101,7 @@ let storageMode = 'file'
 function stateDir() {
   const configured = typeof process.env.DSH_HOME === 'string' ? process.env.DSH_HOME.trim() : ''
   const home = configured.length > 0 ? configured : join(homedir(), '.dsh')
-  return join(home, 'plugin-dashboard')
+  return join(home, 'plugin-rack')
 }
 
 function stateFile() {
@@ -210,7 +215,8 @@ const ZH_ALIAS = {
   '@michengai/dsh-skills-manager': '技能管理',
   '@nanmicoder/dsh-agent-teams': '多智能体',
   'dsh-our-free-model': '免费模型',
-  'dsh-plugin-dashboard': '插件管理台',
+  'dsh-plugin-rack': '插件管理',
+  'dsh-plugin-dashboard': '插件管理',
   'deepseek-harness/index.js': '命令安全网',
   'clearai-dsh': '智能体预设',
   'ds-bot': '机器人团队',
@@ -632,9 +638,14 @@ async function detailFor(ctx, entryId) {
 
 /** True for this plugin's own row, whether it is mounted bare or by file spec. */
 function isSelfRow(moduleName, patchId) {
-  if (patchId === SELF) return true
-  if (moduleName === SELF) return true
-  return moduleName.includes(`/${SELF}/`) || moduleName.endsWith(`/${SELF}`)
+  if (typeof patchId === 'string' && SELF_NAMES.some(name => patchId === name || patchId === 'plugin-rack' || patchId === 'plugin-dashboard')) {
+    return true
+  }
+  for (const name of SELF_NAMES) {
+    if (moduleName === name) return true
+    if (moduleName.includes(`/${name}/`) || moduleName.endsWith(`/${name}`)) return true
+  }
+  return false
 }
 
 function toRow(entry, base) {
@@ -1807,7 +1818,7 @@ function installedCommit(dir, name) {
  * the environment is used when one is present.
  */
 function githubHeaders() {
-  const headers = { accept: 'application/vnd.github+json', 'user-agent': 'dsh-plugin-dashboard' }
+  const headers = { accept: 'application/vnd.github+json', 'user-agent': 'dsh-plugin-rack' }
   const token = typeof process.env.GITHUB_TOKEN === 'string' ? process.env.GITHUB_TOKEN.trim() : ''
   if (token.length > 0) headers.authorization = `Bearer ${token}`
   return headers
@@ -2432,7 +2443,7 @@ async function bundleFor(ctx, name) {
 async function listRemovable(ctx) {
   const all = await ctx.pluginManager.listBundles()
   return all
-    .filter((item) => item.removable === true && item.availability === 'profile' && item.name !== SELF)
+    .filter((item) => item.removable === true && item.availability === 'profile' && !SELF_NAMES.includes(item.name))
     .map((item) => ({ name: item.name, version: item.version ?? null, enabled: item.enabled === true, installed: item.installed === true }))
 }
 
@@ -2446,7 +2457,7 @@ async function listRemovable(ctx) {
 async function actUninstall(ctx, name) {
   if (typeof name !== 'string' || name.trim().length === 0) throw new HttpError(400, 'name is required')
   const target = name.trim()
-  if (target === SELF) throw new Error('不能卸载正在运行的面板本身，请用宿主自带的插件管理器')
+  if (SELF_NAMES.includes(target)) throw new Error('不能卸载正在运行的面板本身，请用宿主自带的插件管理器')
   const bundle = await bundleFor(ctx, target)
   if (bundle === null) throw new Error(`${target} 不是本 profile 挂载的 bundle，无法卸载`)
   if (bundle.removable !== true) throw new Error(`${target} 由宿主管理，不允许卸载`)

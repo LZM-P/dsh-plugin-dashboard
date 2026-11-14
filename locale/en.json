@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Plugin dashboard",
+    "title": "Plugin rack",
     "description": "Every plugin in one list: a power switch per row plus an auto/manual flag that decides which plugins the one-click turn-all-on and turn-all-off actions cover."
   }
 }

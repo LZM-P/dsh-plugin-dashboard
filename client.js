@@ -6,18 +6,18 @@
  * Client-side Remote access policy.
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-plugin-dashboard',
+  id: 'dsh-plugin-rack',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
 
-    const PANEL_ID = 'plugin-dashboard';
-    const API = '/api/dsh-plugin-dashboard';
-    const NS = 'plugin-dashboard';
+    const PANEL_ID = 'plugin-rack';
+    const API = '/api/dsh-plugin-rack';
+    const NS = 'plugin-rack';
 
     const DICT = {
       en: {
-        title: 'Plugin dashboard',
+        title: 'Plugin rack',
         subtitle: 'Per-plugin power switch and an auto/manual flag that decides who follows the one-click actions.',
         refresh: 'Refresh',
         enableAll: 'Turn all on',
@@ -185,7 +185,7 @@ window.__ModuleLoader__.load({
         unitPlugins: 'plugins',
       },
       zh: {
-        title: '插件管理台',
+        title: '插件管理',
         subtitle: '每个插件一个开关，外加「自动 / 手动」标记：只有标为自动的插件才受一键开启 / 关闭影响。',
         refresh: '刷新',
         enableAll: '一键全部开启',
@@ -354,7 +354,7 @@ window.__ModuleLoader__.load({
       },
     };
 
-    const LANG_KEY = 'plugin-dashboard:lang';
+    const LANG_KEY = 'plugin-rack:lang';
     const DEFAULT_LANG = 'zh';
 
     function storedLang() {
