@@ -506,8 +506,22 @@ window.__ModuleLoader__.load({
       if (list.length === 0) return undefined;
       const failed = list.filter((one) => one !== null && typeof one === 'object' && one.ok !== true);
       if (list.length === 1) {
-        // 单通道时原样返回：调用方要靠 log / hotSwap / restart 显示详情。
-        return list[0];
+        // 单通道时保留原始字段（log / hotSwap / restart 面板要靠它显示详情），
+        // 但必须把顶层的 name/message 规范化成 failed 数组 —— /updates 和
+        // /extras 抛错时返回的是 { ok:false, name, message }，没有 failed 字段，
+        // 渲染端就只能显示一句裸错误，连是哪个渠道挂了都看不出来。
+        const only = list[0];
+        if (only !== null && typeof only === 'object' && only.ok !== true) {
+          const name = typeof only.name === 'string' && only.name !== '' ? only.name : '';
+          const reason = only.message === undefined || only.message === null ? '' : String(only.message);
+          return Object.assign({}, only, {
+            failed: [
+              ...(Array.isArray(only.failed) ? only.failed : []),
+              ...(name === '' && reason === '' ? [] : [{ name, output: reason }]),
+            ],
+          });
+        }
+        return only;
       }
       const updated = [];
       for (const one of list) {
@@ -522,10 +536,21 @@ window.__ModuleLoader__.load({
           updated.push({ name: one.name, to: one.to });
         }
       }
-      const restart = list.some((one) => one !== null && typeof one === 'object' && one.restart === true);
-      const hotSwap = list
+      // 只要有一个渠道真的热替换成功，代码就是活的，不该再要求重启。
+      // 之前 restart 取 `some(one => one.restart === true)`、hotSwap 取最后一条，
+      // 于是「npm 渠道热替换成功 + extras 渠道没跑热替换」会被报成"需重启"。
+      const swapped = list.some(
+        (one) => one !== null && typeof one === 'object' && one.hotSwap !== undefined && one.hotSwap !== null && one.hotSwap.ok === true,
+      );
+      const reportedRestart = list.some((one) => one !== null && typeof one === 'object' && one.restart === true);
+      const restart = swapped ? false : reportedRestart;
+      const hotSwapCandidates = list
         .map((one) => (one !== null && typeof one === 'object' ? one.hotSwap : undefined))
-        .filter((one) => one !== undefined);
+        .filter((one) => one !== undefined && one !== null);
+      // 优先展示那个成功的那条，否则给最后一条（它带着失败原因）。
+      const hotSwap =
+        hotSwapCandidates.find((one) => one.ok === true) ??
+        (hotSwapCandidates.length > 0 ? hotSwapCandidates[hotSwapCandidates.length - 1] : undefined);
       const log = list
         .map((one) => (one !== null && typeof one === 'object' ? one.log : undefined))
         .filter((one) => typeof one === 'string');
@@ -537,7 +562,7 @@ window.__ModuleLoader__.load({
           output: String(one.message ?? one.output ?? ''),
         })),
         restart,
-        hotSwap: hotSwap.length > 0 ? hotSwap[hotSwap.length - 1] : undefined,
+        hotSwap,
         log: log.length > 0 ? log[log.length - 1] : undefined,
         message:
           failed.length === 0
@@ -2464,24 +2489,33 @@ window.__ModuleLoader__.load({
                           : String(updateLog.message || '')),
                   ),
                 ),
-                Array.isArray(updateLog.updated) && updateLog.updated.length > 0
-                  ? h(
-                      'div',
-                      { className: 'pd-update-list' },
-                      renderUpdateReport(updateLog, { unknown: t('updateUnknown') }).updated.map((line, index) =>
-                        h('div', { key: index, className: 'pd-update-item' }, line),
-                      ),
-                    )
-                  : null,
-                updateLog.failed !== undefined && updateLog.failed !== null
-                  ? h(
-                      'div',
-                      { className: 'pd-update-log-out' },
-                      renderUpdateReport(updateLog, { unknown: t('updateUnknown') }).failed.map((line, index) =>
-                        h('div', { key: index, className: 'pd-update-item' }, line),
-                      ),
-                    )
-                  : null,
+                // 只算一次，两个列表共用一份结果：纯函数重复调用没有副作用，
+                // 但两处各算一次意味着两份渲染可能对不上（上一次就是这么漂的）。
+                (() => {
+                  const lines = renderUpdateReport(updateLog, { unknown: t('updateUnknown') });
+                  return [
+                    lines.updated.length > 0
+                      ? h(
+                          'div',
+                          { key: 'ok-list', className: 'pd-update-list' },
+                          lines.updated.map((line, index) =>
+                            h('div', { key: index, className: 'pd-update-item' }, line),
+                          ),
+                        )
+                      : null,
+                    // failed 是空数组时不画框：一个空的 pd-update-log-out 看起来像
+                    // 「有失败但没显示」，比不画更让人困惑。
+                    lines.failed.length > 0
+                      ? h(
+                          'div',
+                          { key: 'fail-list', className: 'pd-update-log-out' },
+                          lines.failed.map((line, index) =>
+                            h('div', { key: index, className: 'pd-update-item' }, line),
+                          ),
+                        )
+                      : null,
+                  ];
+                })(),
               ),
         );
 

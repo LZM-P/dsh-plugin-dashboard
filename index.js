@@ -2344,6 +2344,20 @@ function installedVersion(dir, name) {
 }
 
 /** The commit pnpm resolved a `github:` dependency to, read back from the lockfile. */
+/**
+ * 本地 pin 的 GitHub commit，读不到返回 null。
+ *
+ * pnpm 把 github 依赖写进 lockfile 的形状不止一种，之前只认
+ * `name@https://codeload.github.com/.../tar.gz/<sha>:` 这一种，于是换了安装方式
+ * 或 pnpm 版本就读不出来。读不出来的后果很实在：github 行的 hasUpdate 只能
+ * 保守地给 false，那一行永远不进更新列表，重新拉取的分支也就一次都跑不到。
+ *
+ * 已知的几种写法都要认：
+ *   name@https://codeload.github.com/owner/repo/tar.gz/<sha>:   （tarball 形式）
+ *   'name@github:owner/repo#<sha>':                            （旧式 github spec）
+ *   name@github:owner/repo/<sha>                               （另一种分隔）
+ * resolution: { commit: <sha>, ... }                           （结构化记录）
+ */
 function installedCommit(dir, name) {
   let lock
   try {
@@ -2352,12 +2366,24 @@ function installedCommit(dir, name) {
     return null
   }
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const pattern = new RegExp(
-    `^\\s*${escaped}@https://codeload\\.github\\.com/[^/]+/[^/]+/tar\\.gz/([0-9a-f]{7,40}):`,
-    'm',
-  )
-  const match = pattern.exec(lock)
-  return match === null ? null : match[1]
+  const patterns = [
+    // tarball 形式（最常见）
+    new RegExp(`^\\s*${escaped}@https://codeload\\.github\\.com/[^/]+/[^/]+/tar\\.gz/([0-9a-f]{7,40}):`, 'm'),
+    // github: 前缀，锚在 # 或 / 之后
+    new RegExp(`^\\s*['"]?${escaped}@github:[^#\\s'"]+[#/]([0-9a-f]{7,40})['"]?:?`, 'm'),
+    // 结构化记录：包名那一行的块里出现 resolution.commit。不能只搜
+    // `resolution: { commit:` —— 那个没有绑定到任何包名，会把别的依赖的
+    // commit 当成这个包的，判出完全错误的「已是最新」。
+    new RegExp(
+      `^\\s*['"]?${escaped}@[^\\n]*:\\s*\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+resolution:\\s*\\{[^}]*commit:\\s*['"]?([0-9a-f]{7,40})`,
+      'm',
+    ),
+  ]
+  for (const pattern of patterns) {
+    const match = pattern.exec(lock)
+    if (match !== null && typeof match[1] === 'string' && match[1] !== '') return match[1]
+  }
+  return null
 }
 
 /**

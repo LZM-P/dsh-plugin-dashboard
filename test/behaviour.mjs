@@ -273,6 +273,35 @@ console.log('one update button covers both channels')
   const empty = mergeUpdateReport([], messageFor)
   check('an empty result returns nothing rather than throwing', empty === undefined)
 
+  // 单渠道失败必须也能渲染出「哪个渠道挂了」。之前单通道原样返回
+  // {ok:false,name,message}，没有 failed 字段，面板只剩一句裸错误。
+  const singleFail = mergeUpdateReport([{ ok: false, name: 'pkg-a', message: 'unreachable' }], messageFor)
+  check('a single-channel failure still gets a failed entry', Array.isArray(singleFail.failed) && singleFail.failed.length === 1)
+  check('the single-channel failure keeps its name', singleFail.failed[0].name === 'pkg-a')
+  check('the single-channel failure keeps its reason', singleFail.failed[0].output === 'unreachable')
+
+  // 单渠道成功仍然原样返回，面板要靠 log / hotSwap 显示详情。
+  const singleOk = mergeUpdateReport([{ ok: true, log: '/tmp/x', hotSwap: { ok: true } }], messageFor)
+  check('a single success passes through untouched', singleOk.log === '/tmp/x' && singleOk.hotSwap.ok === true)
+
+  // 混合更新里只要有一个渠道热替换成功，就不该再要求重启。
+  const mixedSwap = mergeUpdateReport(
+    [
+      { ok: true, hotSwap: { ok: true }, restart: false },
+      { ok: true, name: 'x', to: '2.0.0', restart: true },
+    ],
+    messageFor,
+  )
+  check('a successful hot swap anywhere suppresses the restart advice', mixedSwap.restart === false)
+  const noSwap = mergeUpdateReport(
+    [
+      { ok: true, hotSwap: { ok: false, reason: 'busy' }, restart: true },
+      { ok: true, name: 'x', to: '2.0.0', restart: true },
+    ],
+    messageFor,
+  )
+  check('without any successful swap the restart advice stays', noSwap.restart === true)
+
   // ---- 结构约束 ----
   check(
     'every extras channel is wrapped in its own try/catch',
@@ -344,6 +373,68 @@ console.log('the panel renders the report it was given')
   // 渲染端必须真的用这个函数，而不是又退回手写模板。
   check('the panel renders through renderUpdateReport', /renderUpdateReport\(updateLog/.test(client))
   check('the old single-object assumption is gone', !client.includes('String(updateLog.failed.name)'))
+}
+
+console.log('github pin resolution')
+{
+  // installedCommit 读不出 commit 时，github 行只能保守地判「无更新」——
+  // 于是那一行永远不进更新列表，repull 一次都跑不到。pnpm 写 lockfile 的
+  // 形状不止一种，解析器必须都认。这里用临时目录跑真实文件。
+  //
+  // 注意：不能复用上面那个花括号配平的 extract()——这个函数体内有正则字面量，
+  // 里面的 {7,40} 会把配平算错，切出一个 66KB 的怪物。
+  const { mkdtempSync, writeFileSync, rmSync, readFileSync: readFile } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'rack-lock-'))
+  const indexSource = readFile(join(root, 'index.js'), 'utf8').replace(/\r\n/g, '\n')
+  const begin = indexSource.indexOf('function installedCommit(')
+  const finish = indexSource.indexOf('\n}\n', indexSource.indexOf('const patterns = [', begin))
+  const installedCommit = new Function(
+    'readFileSync',
+    'join',
+    indexSource.slice(begin, finish + 2) + '\nreturn installedCommit',
+  )((p, enc) => readFile(p, enc), join)
+  const SHA = '0123456789abcdef0123456789abcdef01234567'
+
+  const cases = [
+    [
+      'codeload tarball form',
+      'dsh-our-free-model',
+      `  dsh-our-free-model@https://codeload.github.com/Ebony-Vinyl/dsh-our-free-model/tar.gz/${SHA}:\n    resolution: {tarball: https://codeload.github.com/x/y/tar.gz/${SHA}}\n`,
+    ],
+    [
+      'github: spec with #',
+      'pkg-a',
+      `  'pkg-a@github:owner/repo#${SHA}':\n    resolution: {tarball: https://codeload.github.com/owner/repo/tar.gz/${SHA}}\n`,
+    ],
+    [
+      'resolved block with commit',
+      'pkg-a',
+      `  pkg-a@github:owner/repo:\n    resolution: {commit: ${SHA}, repo: owner/repo, type: git}\n`,
+    ],
+  ]
+
+  for (const [label, pkg, text] of cases) {
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), text, 'utf8')
+    check('reads the pin from ' + label, installedCommit(dir, pkg) === SHA, String(installedCommit(dir, pkg)))
+  }
+
+  // 不能把别的包的 commit 当成这个包的。
+  writeFileSync(
+    join(dir, 'pnpm-lock.yaml'),
+    `  other-pkg@github:someone/else:\n    resolution: {commit: ${SHA}, type: git}\n`,
+    'utf8',
+  )
+  check(
+    'does not borrow another package commit',
+    installedCommit(dir, 'pkg-a') === null,
+    String(installedCommit(dir, 'pkg-a')),
+  )
+
+  // 没有 lockfile 时返回 null，不抛。
+  rmSync(join(dir, 'pnpm-lock.yaml'))
+  check('a missing lockfile returns null', installedCommit(dir, 'pkg-a') === null)
+  rmSync(dir, { recursive: true, force: true })
 }
 
 console.log('write gate')
