@@ -242,8 +242,9 @@ function endJob(job, result) {
 }
 
 /**
- * 取消正在跑的任务。下载阶段的 fetch 会立刻中断；pnpm 已经起来的那种只能等它自己
- * 退出——把 job 标成失败，让用户先看见「停了」，别在那儿对着转圈干等。
+ * 取消正在跑的任务。下载阶段的 fetch 会立刻中断；pnpm 已经起来的那种先杀掉进程树，
+ * 由失败分支回滚。回滚本身还是一次 pnpm 运行，所以任务在回滚完成前保持 running——
+ * 否则界面显示「已取消」，后台却还在改 node_modules，用户既看不见也停不下。
  */
 function cancelJob() {
   const job = activeJob
@@ -255,11 +256,15 @@ function cancelJob() {
     activePnpmChild = null
   }
   if (activeJobAbort !== null) activeJobAbort.abort(new Error('cancelled by the user'))
-  const message = killedPnpm
-    ? '已取消：pnpm 进程被终止，动过的文件会由回滚逻辑还原'
-    : activeJobStage === 'download'
-      ? '已取消：下载已中断，下好的部分留着下次续传'
-      : '已取消'
+  if (killedPnpm) {
+    // endJob runs from the failed install's rollback path; until then the job
+    // stays visible, with the cancel button gone and this message on screen.
+    job.stage = 'rollback'
+    job.message = '已取消：pnpm 进程被终止，正在回滚改动'
+    persistJob(job)
+    return { ok: true, job: jobStatus() }
+  }
+  const message = activeJobStage === 'download' ? '已取消：下载已中断，下好的部分留着下次续传' : '已取消'
   endJob(job, { ok: false, message })
   return { ok: true, job: jobStatus() }
 }
@@ -1171,8 +1176,18 @@ async function actBulk(ctx, enabled, scope, mode) {
   if (mutationBusy) {
     return { ok: false, message: '一个安装或卸载还在进行中，等它结束再操作' }
   }
+  // Claim the mutex before the first await. Checking here and locking later
+  // let two bulk requests both pass the check, and the second one's finally
+  // then released the first one's lock.
+  if (!beginMutation()) return { ok: false, message: BUSY_MESSAGE }
 
-  const rows = await readRows(ctx)
+  let rows
+  try {
+    rows = await readRows(ctx)
+  } catch (error) {
+    endMutation()
+    throw error
+  }
   const state = roster()
   const auto = new Set(state.auto)
   const scoped = typeof scope === 'string' && scope.length > 0
@@ -1211,7 +1226,6 @@ async function actBulk(ctx, enabled, scope, mode) {
   // `save` writes the patch and reloads nothing. It is the right mode for the
   // "stop everything, update it, restart" workflow, which restarts anyway.
   if (mode === 'save') {
-    if (!beginMutation()) return { ok: false, message: BUSY_MESSAGE }
     try {
       const written = await writeEnabledBatch(ctx, targets, enabled)
       return {
@@ -1245,9 +1259,8 @@ async function actBulk(ctx, enabled, scope, mode) {
   // polls /state, which carries `bulk`. It keeps a local reference because a
   // later run replaces `bulkJob` while this one may still be finishing.
   const job = bulkJob
-  // The detached run owns the mutex until it finishes: a bulk toggle and a
-  // pnpm install must never edit the profile at the same moment.
-  mutationBusy = true
+  // The mutex was claimed before the first await; the detached run owns it
+  // until its finally hands it back.
   void (async () => {
     for (const row of targets) {
       if (job.cancelled) break
@@ -1263,7 +1276,7 @@ async function actBulk(ctx, enabled, scope, mode) {
     .finally(() => {
       job.current = null
       job.running = false
-      mutationBusy = false
+      endMutation()
     })
 
   return {
@@ -1415,7 +1428,7 @@ function compareVersions(left, right) {
  * npmjs.org — and npmjs.org is the fallback, because a mirror that lags or
  * lacks a package must not read as "no update".
  */
-async function npmLatest(name, base) {
+async function npmLatest(name, base, signal) {
   const encoded = name.startsWith('@') ? name.replace('/', '%2f') : name
   const configured = typeof base === 'string' && base.trim().length > 0 ? base.trim() : null
   const roots = []
@@ -1423,9 +1436,14 @@ async function npmLatest(name, base) {
   if (roots[0] !== 'https://registry.npmjs.org/') roots.push('https://registry.npmjs.org/')
   const errors = []
   for (const root of roots) {
+    if (signal !== undefined && signal !== null && signal.aborted) throw new Error('cancelled by the user')
     try {
+      // The query is user-cancellable: cancelling used to do nothing while a
+      // slow mirror was being asked, so the panel said "cancelled" and kept
+      // waiting.
+      const timeout = AbortSignal.timeout(REGISTRY_TIMEOUT)
       const response = await fetchAny(`${root}${encoded}/latest`, {
-        signal: AbortSignal.timeout(REGISTRY_TIMEOUT),
+        signal: signal === undefined || signal === null ? timeout : AbortSignal.any([timeout, signal]),
         headers: { accept: 'application/json' },
       })
       if (!response.ok) throw new Error(`registry answered ${response.status}`)
@@ -1468,7 +1486,7 @@ async function checkUpdates(ctx) {
       if (index >= targets.length) return
       const target = targets[index]
       try {
-        const latest = await npmLatest(target.name, base)
+        const latest = await npmLatest(target.name, base, activeJobAbort === null ? undefined : activeJobAbort.signal)
         rows[index] = {
           name: target.name,
           current: target.current,
@@ -1708,6 +1726,16 @@ function killTree(child) {
       })
       return
     }
+    // POSIX: runPnpm makes the child a process-group leader, so a negative
+    // pid reaches pnpm's own children too.
+    if (process.platform !== 'win32' && typeof child.pid === 'number') {
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+        return
+      } catch {
+        // Fall through to the direct kill.
+      }
+    }
     child.kill('SIGKILL')
   } catch {
     // The close event still fires and settles the promise.
@@ -1728,6 +1756,9 @@ function runPnpm(script, args, cwd, timeoutMs = PNPM_TIMEOUT) {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
+      // Own process group on POSIX, so killTree can reach the downloaders and
+      // build scripts pnpm forks instead of orphaning them.
+      detached: process.platform !== 'win32',
     })
     let output = ''
     activePnpmChild = child
@@ -1947,6 +1978,7 @@ async function applyUpdates(ctx, names, pinned = null) {
   let release = null
   const deadline = Date.now() + IDLE_WAIT_MS
   for (;;) {
+    if (activeJobAbort !== null && activeJobAbort.signal.aborted) throw new Error('cancelled by the user')
     try {
       release = await holdAgents(ctx)
       break
@@ -1985,6 +2017,9 @@ async function applyUpdates(ctx, names, pinned = null) {
     for (const [file, text] of backup) writeFileSync(file, text, 'utf8')
     // node_modules still holds whatever did install, and the host loads from
     // there — restoring the manifests alone would leave the update live.
+    // Rolling back is one more pnpm run and can take minutes; say so on the
+    // job page instead of leaving it frozen on "install".
+    activeJobStage = 'rollback'
     let resync = null
     try {
       const releaseAgain = await holdAgents(ctx)
@@ -2567,6 +2602,18 @@ function openStream(route, url, offset, signal) {
 
 async function pipeTo(part, response, signal, offset, deadline) {
   const stream = createWriteStream(part, { flags: offset > 0 ? 'a' : 'w' })
+  // A write error used to reach nobody: the stream emitted 'error' with no
+  // listener, an unhandled 'error' takes the whole process down, and this
+  // plugin shares the host's process. Remember the failure here instead, and
+  // keep the listener for as long as the stream can still emit.
+  let failure = null
+  stream.on('error', error => {
+    if (failure === null) failure = error
+  })
+  const fail = error => {
+    if (failure === null) failure = error
+  }
+
   let idle = null
   const arm = () => {
     if (idle !== null) clearTimeout(idle)
@@ -2576,6 +2623,37 @@ async function pipeTo(part, response, signal, offset, deadline) {
     )
   }
   const onAbort = () => response.destroy(new Error('cancelled'))
+  // Wait for the write buffer to drain, but stop waiting on abort or error:
+  // a stalled disk plus a cancel would otherwise sit here forever.
+  const waitDrain = () =>
+    new Promise((resolve, reject) => {
+      const done = () => {
+        clean()
+        resolve(undefined)
+      }
+      const failDrain = error => {
+        clean()
+        reject(error)
+      }
+      const onSignal = () => {
+        response.destroy(new Error('cancelled'))
+        failDrain(new Error('cancelled'))
+      }
+      const clean = () => {
+        stream.removeListener('drain', done)
+        stream.removeListener('error', failDrain)
+        if (signal !== undefined && signal !== null) signal.removeEventListener('abort', onSignal)
+      }
+      stream.once('drain', done)
+      stream.once('error', failDrain)
+      if (signal !== undefined && signal !== null) {
+        if (signal.aborted) {
+          onSignal()
+          return
+        }
+        signal.addEventListener('abort', onSignal, { once: true })
+      }
+    })
   if (signal !== undefined && signal !== null) {
     if (signal.aborted) onAbort()
     else signal.addEventListener('abort', onAbort, { once: true })
@@ -2583,9 +2661,17 @@ async function pipeTo(part, response, signal, offset, deadline) {
   try {
     arm()
     for await (const chunk of response) {
-      if (Date.now() >= deadline) response.destroy(new Error('下载超过 ' + Math.round(DOWNLOAD_TIMEOUT_MS / 60000) + ' 分钟，已放弃'))
+      if (failure !== null) throw failure
+      if (Date.now() >= deadline) {
+        const late = new Error('下载超过 ' + Math.round(DOWNLOAD_TIMEOUT_MS / 60000) + ' 分钟，已放弃')
+        response.destroy(late)
+        throw late
+      }
       arm()
-      stream.write(chunk)
+      // Honour backpressure: ignoring write()'s answer means the whole
+      // attachment piles up in memory while the disk lags.
+      if (!stream.write(chunk)) await waitDrain()
+      if (failure !== null) throw failure
     }
     await new Promise((resolve, reject) => {
       stream.once('error', reject)
@@ -2594,7 +2680,10 @@ async function pipeTo(part, response, signal, offset, deadline) {
   } finally {
     if (idle !== null) clearTimeout(idle)
     if (signal !== undefined && signal !== null) signal.removeEventListener('abort', onAbort)
-    stream.destroy()
+    // Only tear the stream down after a failure. On success end() has flushed
+    // it already, and destroy() would race the last pending write callback
+    // with ERR_STREAM_DESTROYED — the other half of the crash above.
+    if (failure !== null && !stream.destroyed) stream.destroy()
   }
 }
 

@@ -45,12 +45,29 @@ let requests = 0
 let rangeRequests = 0
 const origin = createServer((req, res) => {
   requests += 1
-    if (req.url === '/stable.bin') {
+  if (req.url === '/stable.bin') {
     res.writeHead(200, { 'content-length': SIZE })
     res.end(payload)
     return
   }
-const range = req.headers.range
+  // A transfer that trickles, so a cancel can land in the middle of it.
+  if (req.url === '/slow.bin') {
+    res.writeHead(200, { 'content-length': SIZE })
+    let offset = 0
+    const step = 64 * 1024
+    const pump = () => {
+      if (offset >= SIZE) {
+        res.end()
+        return
+      }
+      res.write(payload.subarray(offset, offset + step))
+      offset += step
+      setTimeout(pump, 5)
+    }
+    pump()
+    return
+  }
+  const range = req.headers.range
   if (typeof range === 'string') {
     rangeRequests += 1
     const start = Number(/bytes=(\d+)-/.exec(range)?.[1] ?? 0)
@@ -174,6 +191,25 @@ process.env.NO_PROXY = '127.0.0.1'
   check(bytes === SIZE && requests > before, 'NO_PROXY skips the proxy')
 }
 process.env.NO_PROXY = ''
+
+// 6. Cancelling mid-flight used to destroy the write stream while chunk
+// callbacks were still queued; the resulting unhandled 'error' took the whole
+// host process down. Five cancels in a row is the cheap way to notice a return.
+for (let i = 0; i < 5; i += 1) {
+  const controller = new AbortController()
+  const dest = fresh('cancel-' + i)
+  const timer = setTimeout(() => controller.abort(new Error('cancelled')), 40)
+  let stopped = false
+  try {
+    await downloadFile('http://127.0.0.1:' + originPort + '/slow.bin', dest, controller.signal)
+  } catch {
+    stopped = true
+  } finally {
+    clearTimeout(timer)
+  }
+  check(stopped, 'cancel #' + (i + 1) + ' stops the transfer')
+  check(existsSync(dest) === false, 'cancel #' + (i + 1) + ' writes no finished file')
+}
 
 for (const server of [origin, proxy, socks]) server.close()
 
