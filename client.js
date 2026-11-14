@@ -135,28 +135,10 @@ window.__ModuleLoader__.load({
         updateAll: 'Update all',
         updateNone: 'Everything is up to date',
         updateIdle: 'Not checked yet — pick “Check for updates”',
-        extrasTitle: 'Other install kinds',
-        extrasHint:
-          'These were not installed by version number, so the updater above skips them. Compare below, then install by hand.',
-        extrasRepull: 'Re-pull',
-        extrasPin: 'Pin to a version',
-        extrasNoNewer: 'up to date',
-        extrasAllCurrent: '{n} listed below are already up to date — nothing to do for them',
-        extrasLink: 'local link',
-        extrasFile: 'local tarball',
-        extrasOpenRelease: 'Open the release page',
-        fileUpgrade: 'Upgrade',
-        fileUpgradeConfirm: 'Confirm upgrade',
-        fileUpgradeRunning: 'Downloading…',
-        fileUpgradePlan: 'Will download',
         fileUpgradeSha: 'official sha256',
         srcLocalFile: 'local tarball',
         srcLocalLink: 'local link',
         srcOther: 'other',
-        extrasUnknown: 'cannot query',
-        extrasWarn: 'A re-pull takes the latest commit; the resulting version cannot be previewed.',
-        extrasDone: 'installed',
-        extrasRolledBack: 'install failed, files rolled back',
         updateChecking: 'Asking the npm registry…',
         updateWait: 'A session is still running; try again once it is idle',
         updateDone: 'Updated',
@@ -174,6 +156,7 @@ window.__ModuleLoader__.load({
         jobQueued: 'Queued: downloaded and verified, installs by itself once a session is free ({n})',
         updateRolledBack: 'Rolled back',
         updateFailed: 'Failed',
+        updatePartial: '{n} of {total} groups failed — the rest went through',
         updateSelectAll: 'Select all',
         viewLog: 'Last log',
         logEmpty: 'No update log yet',
@@ -309,28 +292,10 @@ window.__ModuleLoader__.load({
         updateAll: '全部更新',
         updateNone: '已经是最新版本',
         updateIdle: '还没检查过，点「检查更新」看有没有新版本',
-        extrasTitle: '其他安装方式',
-        extrasHint:
-          '这几个包不是按版本号安装的，上面的自动更新会跳过它们。先对比，再决定要不要手动装。',
-        extrasRepull: '重新拉取',
-        extrasPin: '改为按版本安装',
-        extrasNoNewer: '已是最新',
-        extrasAllCurrent: '下面 {n} 个已经是最新，不需要手动处理',
-        extrasLink: '本地软链',
-        extrasFile: '本地文件包',
-        extrasOpenRelease: '打开发布页',
-        fileUpgrade: '一键升级',
-        fileUpgradeConfirm: '确认升级',
-        fileUpgradeRunning: '正在下载…',
-        fileUpgradePlan: '将下载',
         fileUpgradeSha: '官方 sha256',
         srcLocalFile: '本地文件包',
         srcLocalLink: '本地软链',
         srcOther: '其他',
-        extrasUnknown: '无法查询',
-        extrasWarn: '重新拉取会取最新提交，拉取前无法预知会变成哪个版本号。',
-        extrasDone: '已安装',
-        extrasRolledBack: '安装失败，已回滚文件',
         updateChecking: '正在查询 npm…',
         updateWait: '有会话正在运行，等它结束后再试',
         updateDone: '已更新',
@@ -348,6 +313,7 @@ window.__ModuleLoader__.load({
         jobQueued: '已排队：附件已下载校验，会话一空闲就会自动安装（{n} 个）',
         updateRolledBack: '已回滚',
         updateFailed: '失败',
+        updatePartial: '{total} 组里 {n} 组失败，其余已完成',
         updateSelectAll: '全选',
         viewLog: '上次日志',
         logEmpty: '还没有更新日志',
@@ -836,8 +802,6 @@ window.__ModuleLoader__.load({
         const [updateLog, setUpdateLog] = React.useState(null);
         const [extras, setExtras] = React.useState(null);
         const [extrasBusy, setExtrasBusy] = React.useState('');
-        const [extraLog, setExtraLog] = React.useState(null);
-        const [filePlan, setFilePlan] = React.useState(null);
         const [logText, setLogText] = React.useState(null);
         const [removable, setRemovable] = React.useState(null);
         const [removableError, setRemovableError] = React.useState('');
@@ -1009,8 +973,26 @@ window.__ModuleLoader__.load({
           try {
             const next = await request('/updates');
             setUpdates(next);
+            // 「其他安装方式」那一栏已经去掉，file / github / tarball 的更新
+            // 信息统一并进这一个列表。它们不能走 POST /updates（那里只认精确
+            // 版本锁定的依赖），所以勾选时记下每个包属于哪条通道。
+            let extrasNext = null;
+            try {
+              extrasNext = await request('/extras');
+              setExtras(extrasNext);
+            } catch {
+              // 拿不到 extras 不影响精确版本的那些包。
+              extrasNext = null;
+            }
             const choice = {};
             for (const row of next.rows || []) if (row.hasUpdate) choice[row.name] = true;
+            if (extrasNext !== null && Array.isArray(extrasNext.rows)) {
+              for (const row of extrasNext.rows) {
+                if (row.hasUpdate !== true) continue;
+                if (typeof row.name !== 'string') continue;
+                choice[row.name] = true;
+              }
+            }
             setPicked(choice);
             setUpdateLog(null);
           } catch (error) {
@@ -1029,14 +1011,56 @@ window.__ModuleLoader__.load({
           if (names.length === 0) return;
           setUpdatesBusy('apply');
           setUpdateLog(null);
+          // 勾选的包分两条通道：精确版本锁定的走 POST /updates（一次 pnpm 装完），
+          // 本地压缩包 / github / 压缩包地址走 POST /extras（逐个下载校验）。
+          // 之前这里一律发 /updates，file 包被 eligibleDeps 过滤掉、勾了也静默不装。
+          const byKind = new Map();
+          for (const row of (extras !== null && Array.isArray(extras.rows) ? extras.rows : [])) {
+            if (typeof row.name === 'string') byKind.set(row.name, row);
+          }
+          const npmNames = [];
+          const extraNames = [];
+          for (const name of names) {
+            const extra = byKind.get(name);
+            if (extra === undefined) npmNames.push(name);
+            else if (extra.kind === 'github') extraNames.push({ name, action: 'repull' });
+            else if (extra.kind === 'file') extraNames.push({ name, action: 'file-upgrade' });
+            else extraNames.push({ name, action: 'pin' });
+          }
           try {
-            // A registry download per package; the host serializes them under one
-            // maintenance hold, so this can legitimately outlive the default budget.
-            const next = await request('/updates', { names }, { timeoutMs: WRITE_TIMEOUT_MS });
-            setUpdateLog(next);
+            const parts = [];
+            if (npmNames.length > 0) {
+              // A registry download per package; the host serializes them under one
+              // maintenance hold, so this can legitimately outlive the default budget.
+              const next = await request('/updates', { names: npmNames }, { timeoutMs: WRITE_TIMEOUT_MS });
+              parts.push(next);
+            }
+            for (const item of extraNames) {
+              const next = await request(
+                '/extras',
+                { name: item.name, action: item.action },
+                { timeoutMs: WRITE_TIMEOUT_MS },
+              );
+              parts.push(next);
+            }
+            const failed = parts.filter((one) => one.ok !== true);
+            const updated = parts.flatMap((one) => (Array.isArray(one.updated) ? one.updated : []));
+            const merged =
+              parts.length === 1 && extraNames.length === 0
+                ? parts[0]
+                : {
+                    ok: failed.length === 0,
+                    updated,
+                    failed: failed.map((one) => ({ name: one.name ?? '', output: String(one.message ?? '') })),
+                    message:
+                      failed.length === 0
+                        ? undefined
+                        : t('updatePartial', { n: failed.length, total: parts.length }),
+                  };
+            setUpdateLog(merged);
             // Re-check on success so the list and the tab badge stop advertising
             // updates that were just installed.
-            if (next.ok === true) {
+            if (failed.length === 0) {
               await load();
               await checkUpdates();
             }
@@ -1045,7 +1069,7 @@ window.__ModuleLoader__.load({
           } finally {
             setUpdatesBusy('');
           }
-        }, [picked, updatesBusy, load, checkUpdates]);
+        }, [picked, updatesBusy, extras, load, checkUpdates, t]);
 
         const viewLog = React.useCallback(async () => {
           if (logText !== null) {
@@ -1082,69 +1106,6 @@ window.__ModuleLoader__.load({
           }
         }, [extrasBusy]);
 
-        const applyExtra = React.useCallback(
-          async (name, action) => {
-            if (extrasBusy !== '') return;
-            setExtrasBusy(name);
-            setExtraLog(null);
-            try {
-              const next = await request('/extras', { name, action }, { timeoutMs: WRITE_TIMEOUT_MS });
-              setExtraLog({ name, ...next });
-              if (next.ok === true) {
-                await load();
-                await checkExtras();
-              }
-            } catch (error) {
-              setExtraLog({ name, ok: false, message: String(error && error.message) });
-            } finally {
-              setExtrasBusy('');
-            }
-          },
-          [extrasBusy, load, checkExtras],
-        );
-
-        // 本地 file: 包的一键升级。它是唯一一个「先看再动」的两步操作：
-        // 第一下只去问目标版本、附件名、体积和官方 sha256（只读，什么都不下载），
-        // 看过之后第二下才真的下载 + 校验 + 替换 + 重装。
-        const checkFilePlan = React.useCallback(async (name) => {
-          setFilePlan({ status: 'loading', name });
-          try {
-            const plan = await request('/fileplan?name=' + encodeURIComponent(name));
-            setFilePlan({ status: 'ready', name, plan });
-          } catch (error) {
-            setFilePlan({
-              status: 'error',
-              name,
-              message: String(error && error.message ? error.message : error),
-            });
-          }
-        }, []);
-
-        const applyFileUpgrade = React.useCallback(
-          async (name) => {
-            if (extrasBusy !== '') return;
-            setExtrasBusy(name);
-            setExtraLog(null);
-            try {
-              const next = await request(
-                '/extras',
-                { name, action: 'file-upgrade' },
-                { timeoutMs: WRITE_TIMEOUT_MS * 2 },
-              );
-              setExtraLog({ name, ...next });
-              setFilePlan(null);
-              if (next.ok === true) {
-                await load();
-                await checkExtras(true);
-              }
-            } catch (error) {
-              setExtraLog({ name, ok: false, message: String(error && error.message) });
-            } finally {
-              setExtrasBusy('');
-            }
-          },
-          [extrasBusy, load, checkExtras],
-        );
 
         // 行里那个「v旧 ➡ v新 来源」小按钮：点一下就把这一个包更新掉，不用去「更新」页。
         // npm 精确版本包走 /updates，其他安装方式（github / 压缩包）走 /extras。
@@ -2209,149 +2170,6 @@ window.__ModuleLoader__.load({
             h('span', { className: 'pd-update-ver' }, row.current + ' → ' + row.latest),
           );
 
-        const shortSha = (value) => (typeof value === 'string' ? value.slice(0, 7) : '');
-
-        const extraRowNode = (row) => {
-          const busyHere = extrasBusy === row.name;
-          const newer = row.kind === 'github' ? row.head !== null && row.installedCommit !== row.head.sha : row.hasUpdate === true;
-          let compare;
-          if (row.kind === 'github') {
-            compare =
-              row.head === null
-                ? String(row.error || t('extrasUnknown'))
-                : shortSha(row.installedCommit || '') + ' → ' + shortSha(row.head.sha) +
-                  (row.head.date ? ' · ' + String(row.head.date).slice(0, 10) : '');
-          } else if (row.kind === 'tarball') {
-            compare = row.npmLatest === null ? String(row.error || t('extrasUnknown')) : row.current + ' → ' + row.npmLatest;
-          } else if (row.kind === 'link') {
-            compare = t('extrasLink');
-          } else if (row.latestRelease !== null && typeof row.latestRelease === 'object') {
-            // 两边版本一样时别再写成「v2.8.3 → v2.8.3」：那不是对比，是噪音。
-            const same =
-              typeof row.current === 'string' &&
-              String(row.latestRelease.version ?? '') === row.current;
-            compare = same
-              ? 'v' + String(row.current) + ' · ' + t('extrasFile') + ' · ' + t('extrasNoNewer')
-              : 'v' + String(row.current ?? '?') + ' → v' + row.latestRelease.version + ' · ' + t('extrasFile');
-          } else {
-            // file: 装的本地压缩包；没找到仓库或对方没发过 Release，就只报本地版本
-            compare = (row.current ? 'v' + row.current + ' · ' : '') + t('extrasFile');
-          }
-          return h(
-            'div',
-            { key: row.name, className: 'pd-update-row' + (newer === true ? '' : ' pd-update-row-done') },
-            h('span', { className: 'pd-update-name' }, row.name),
-            h('span', { className: 'pd-update-ver' }, compare),
-            row.kind === 'github'
-              ? h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'pd-btn',
-                    disabled: extrasBusy !== '' || newer !== true,
-                    onClick: () => applyExtra(row.name, 'repull'),
-                  },
-                  busyHere ? '…' : newer === true ? t('extrasRepull') : t('extrasNoNewer'),
-                )
-              : row.kind === 'tarball'
-                ? h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'pd-btn',
-                      disabled: extrasBusy !== '' || newer !== true,
-                      onClick: () => applyExtra(row.name, 'pin'),
-                    },
-                    busyHere ? '…' : newer === true ? t('extrasPin') : t('extrasNoNewer'),
-                  )
-                : row.kind === 'file' && row.latestRelease !== null && typeof row.latestRelease === 'object'
-                  ? h(
-                      'span',
-                      { className: 'pd-fileacts' },
-                      h(
-                        'button',
-                        {
-                          type: 'button',
-                          className: 'pd-btn pd-btn-primary',
-                          disabled: extrasBusy !== '' || newer !== true,
-                          onClick: () => {
-                            const planned =
-                              filePlan !== null &&
-                              filePlan.name === row.name &&
-                              filePlan.status === 'ready' &&
-                              filePlan.plan !== null &&
-                              filePlan.plan.ok === true;
-                            if (planned) applyFileUpgrade(row.name);
-                            else checkFilePlan(row.name);
-                          },
-                        },
-                        busyHere
-                          ? t('fileUpgradeRunning')
-                          : newer !== true
-                            ? // 已经是最新版（或读不到新版）：按钮是禁用的，文字也不能
-                              // 再写「一键升级」，否则用户看到「v2.8.3 → v2.8.3」旁边
-                              // 挂着一个升级按钮，会以为面板算错了。
-                              t('extrasNoNewer')
-                            : filePlan !== null &&
-                                filePlan.name === row.name &&
-                                filePlan.status === 'ready' &&
-                                filePlan.plan !== null &&
-                                filePlan.plan.ok === true
-                              ? t('fileUpgradeConfirm')
-                              : t('fileUpgrade'),
-                      ),
-                      h(
-                        'a',
-                        {
-                          className: 'pd-btn',
-                          href:
-                            typeof row.latestRelease.url === 'string' ? row.latestRelease.url : 'https://github.com',
-                          target: '_blank',
-                          rel: 'noreferrer',
-                          title: t('extrasOpenRelease'),
-                        },
-                        t('extrasOpenRelease'),
-                      ),
-                    )
-                  : null,
-            filePlan !== null && filePlan.name === row.name
-              ? h(
-                  'span',
-                  { className: 'pd-hint pd-fileplan' },
-                  filePlan.status === 'loading'
-                    ? t('updateChecking')
-                    : filePlan.status === 'error'
-                      ? t('updateFailed') + ' · ' + String(filePlan.message || '')
-                      : filePlan.plan !== null && filePlan.plan.ok === true
-                        ? t('fileUpgradePlan') +
-                          ' ' +
-                          filePlan.plan.target.asset.name +
-                          ' · ' +
-                          Math.round(Number(filePlan.plan.target.asset.size || 0) / 1048576) +
-                          ' MB · ' +
-                          t('fileUpgradeSha') +
-                          ' ' +
-                          String(filePlan.plan.target.sha256).slice(0, 16) +
-                          '…'
-                        : t('updateFailed') + ' · ' + String((filePlan.plan && filePlan.plan.message) || ''),
-                )
-              : null,
-            row.kind === 'github' && row.head !== null && row.head.message !== null
-              ? h('span', { className: 'pd-hint' }, row.head.message)
-              : null,
-          );
-        };
-
-        const extrasAll = extras === null || extras.ok !== true ? [] : extras.rows || [];
-        // 有更新的排前面，已经最新的沉底。这样「其他安装方式」这一栏先回答
-        // 「有没有东西需要我动手」，而不是让人逐行去比两串版本号。
-        const extrasNewer = (row) =>
-          row.kind === 'github' ? row.head !== null && row.installedCommit !== row.head.sha : row.hasUpdate === true;
-        const extrasRows = extrasAll
-          .filter((row) => extrasNewer(row))
-          .concat(extrasAll.filter((row) => !extrasNewer(row)));
-        const extrasCurrentCount = extrasAll.filter((row) => !extrasNewer(row)).length;
-
         const installPanel = h(
           'div',
           { className: 'pd-updates' },
@@ -2433,54 +2251,6 @@ window.__ModuleLoader__.load({
               ),
         );
 
-        const extrasPanel = h(
-          'div',
-          { className: 'pd-updates' },
-          h(
-            'div',
-            { className: 'pd-update-bar' },
-            h('b', null, t('extrasTitle')),
-            h('span', { className: 'pd-hint' }, t('extrasHint')),
-          ),
-          extras === null
-            ? h('div', { className: 'pd-empty' }, extrasBusy === 'check' ? t('updateChecking') : t('updateIdle'))
-            : extras.ok !== true
-              ? h('div', { className: 'pd-empty' }, String(extras.message || 'error'))
-              : extrasRows.length === 0
-                ? h('div', { className: 'pd-empty' }, t('updateNone'))
-                : [
-                    ...extrasRows.map(extraRowNode),
-                    // 已经最新的那些沉在下面，补一句说明它们不需要动手，
-                    // 免得用户以为"排后面的没检查"。
-                    extrasCurrentCount > 0
-                      ? h(
-                          'div',
-                          { key: '__current', className: 'pd-hint' },
-                          t('extrasAllCurrent', { n: extrasCurrentCount }),
-                        )
-                      : null,
-                  ],
-          extrasRows.some((row) => row.kind === 'github') ? h('div', { className: 'pd-hint' }, t('extrasWarn')) : null,
-          extraLog === null
-            ? null
-            : h(
-                'div',
-                { className: 'pd-update-log ' + (extraLog.ok === true ? 'pd-update-log-ok' : 'pd-update-log-bad') },
-                h(
-                  'b',
-                  null,
-                  extraLog.ok === true
-                    ? t('extrasDone')
-                    : extraLog.rolledBack === true
-                      ? t('extrasRolledBack')
-                      : t('updateFailed'),
-                ),
-                h('span', null, ' · ' + String(extraLog.name || '') + (extraLog.ok === true ? ' · ' + (extraLog.hotSwap && extraLog.hotSwap.ok === true ? t('updateSwapped') : t('updateRestart')) : '')),
-                extraLog.ok === true || extraLog.rolledBack === true
-                  ? h('div', { className: 'pd-update-log-out' }, String(extraLog.output || '').slice(-600))
-                  : h('div', { className: 'pd-update-log-out' }, String(extraLog.message || extraLog.output || '')),
-              ),
-        );
 
         const updatePanel = h(
           'div',
@@ -2804,7 +2574,7 @@ window.__ModuleLoader__.load({
               )
             : null,
           tab === 'updates'
-            ? h('div', null, installPanel, updatePanel, extrasPanel)
+            ? h('div', null, installPanel, updatePanel)
             : groups.length === 0
               ? h('div', { className: 'pd-empty' }, t('empty'))
               : groups.map(groupNode),

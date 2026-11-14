@@ -175,18 +175,25 @@ console.log('connection reset is not reported as failure')
   })())
 }
 
-console.log('extras rows do not offer an upgrade when there is none')
+console.log('one update button covers both channels')
 {
   const client = readFileSync(join(root, 'client.js'), 'utf8')
-  // 上一版的 bug：disabled 检查了 newer，按钮文字没检查，于是「v2.8.3 → v2.8.3」
-  // 旁边挂着一个写着「一键升级」的灰按钮。文字和 disabled 必须用同一个判据。
-  check('the file upgrade button disables on !newer', client.includes("disabled: extrasBusy !== '' || newer !== true"))
-  check('the file upgrade label also respects newer', /newer !== true\s*\n\s*\?\s*\/\/[\s\S]{0,400}?t\('extrasNoNewer'\)/.test(client))
-  check('an unchanged file version is not shown as an arrow', client.includes('const same ='))
-  check('identical versions collapse to a single label', client.includes("t('extrasNoNewer')"))
-  // 有更新的排前面
-  check('rows with an update sort first', client.includes('.filter((row) => extrasNewer(row))'))
-  check('up-to-date rows are dimmed', client.includes("' pd-update-row-done'"))
+  // 「其他安装方式」那一栏已经去掉。勾选的包现在按通道分流：
+  // 精确版本锁定的走 POST /updates，github / 本地压缩包 / 压缩包地址走 POST /extras。
+  // 之前这里一律发 /updates，file 包被 eligibleDeps 过滤掉，勾了也静默不装。
+  check('the batch splits selected names into two channels', client.includes('const npmNames = []'))
+  check('file packages are routed to file-upgrade', client.includes("extra.kind === 'file'") && client.includes("action: 'file-upgrade'"))
+  check('github packages are routed to repull', client.includes("action: 'repull'"))
+  check('tarball packages are routed to pin', client.includes("action: 'pin'"))
+  check('the npm channel still uses one /updates call', client.includes("request('/updates', { names: npmNames }"))
+  // extras 的结果不能直接塞进 updateLog 当整份快照用，必须被合并成一条。
+  check('mixed results are merged into one report', client.includes('const merged ='))
+  check('a partial failure is surfaced, not hidden', client.includes('updatePartial'))
+  // 勾选现在同时来自两个接口。
+  check('selections come from both endpoints', client.includes("extrasNext = await request('/extras')"))
+  // 那一栏本身必须真的没了。
+  check('the extras panel is gone', !client.includes('extrasPanel'))
+  check('the per-row extras renderer is gone', !client.includes('extraRowNode'))
 }
 
 console.log('write gate')
