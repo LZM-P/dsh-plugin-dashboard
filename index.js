@@ -2625,17 +2625,36 @@ function noProxyMatch(host, raw) {
   return false
 }
 
-/** The proxy Windows itself is configured with, when there is one. */
+/**
+ * Whether Windows is actually routing through that proxy right now.
+ *
+ * The ProxyServer value stays in the registry after the user turns the proxy
+ * off — only ProxyEnable flips. Reading ProxyServer alone therefore sends every
+ * download into a dead port and burns the whole timeout budget before the direct
+ * fallback even starts; that is the "tried 127.0.0.1:7900 … direct: The
+ * operation was aborted" report. A missing ProxyEnable counts as enabled,
+ * because older layouts only wrote ProxyServer.
+ */
+function proxyEnableAllows(stdout) {
+  if (typeof stdout !== 'string') return true
+  const match = /ProxyEnable\s+REG_DWORD\s+0x([0-9a-fA-F]+)/.exec(stdout)
+  if (match === null) return true
+  return Number.parseInt(match[1], 16) !== 0
+}
+
+/** The proxy Windows itself is configured with, when it is switched on. */
 function systemProxyRoute() {
   if (process.platform !== 'win32') return null
   try {
     const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
-    const query = spawnSync('reg', ['query', key, '/v', 'ProxyServer'], {
+    // One query for the whole key: ProxyEnable only exists as a sibling value.
+    const query = spawnSync('reg', ['query', key], {
       encoding: 'utf8',
       timeout: 3000,
       windowsHide: true,
     })
     if (query.status !== 0 || typeof query.stdout !== 'string') return null
+    if (!proxyEnableAllows(query.stdout)) return null
     const match = /ProxyServer\s+REG_SZ\s+(.+)/.exec(query.stdout)
     if (match === null) return null
     const parts = match[1]
@@ -3052,12 +3071,16 @@ export async function fetchAny(url, init) {
     return await fetch(url, init)
   } catch (error) {
     const target = new URL(url)
-    const signal = init !== undefined && init !== null ? init.signal : undefined
     const routes = downloadRoutes(target)
     const failures = []
     for (const route of routes) {
       try {
-        return await readResponseLike(target, route.route, signal)
+        // A fresh budget per route: the caller's signal is usually a
+        // AbortSignal.timeout(...) that the failed fetch has already spent, so
+        // passing it on would abort every fallback instantly and report "The
+        // operation was aborted" for a route that was never actually tried.
+        const fallback = AbortSignal.timeout(REGISTRY_TIMEOUT)
+        return await readResponseLike(target, route.route, fallback)
       } catch (next) {
         failures.push(route.label + ': ' + (next instanceof Error ? next.message : String(next)))
       }

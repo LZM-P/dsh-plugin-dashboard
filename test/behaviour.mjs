@@ -538,6 +538,18 @@ console.log('rollback is not cancellable')
   check('the client honours cancelable rather than guessing', client.includes('job.cancelable === false'))
 }
 
+
+console.log('a switched-off Windows proxy is not a route')
+{
+  const proxyEnableAllows = load('proxyEnableAllows')
+  const off = '    ProxyEnable    REG_DWORD    0x0\r\n    ProxyServer    REG_SZ    127.0.0.1:7900\r\n'
+  const on = '    ProxyEnable    REG_DWORD    0x1\r\n    ProxyServer    REG_SZ    127.0.0.1:7897\r\n'
+  check('a disabled proxy is ignored', proxyEnableAllows(off) === false)
+  check('an enabled proxy is used', proxyEnableAllows(on) === true)
+  check('a missing switch counts as enabled', proxyEnableAllows('    ProxyServer    REG_SZ    x\r\n') === true)
+  check('the route reads the switch, not only the server', source.includes('proxyEnableAllows(query.stdout)'))
+}
+
 if (failures.length > 0) {
   console.log('')
   console.log('BEHAVIOUR_CHECK_FAILED: ' + failures.length + ' problem(s)')
