@@ -7,3 +7,12 @@ node_modules/
 .msg
 .m
 .msg
+
+# 临时脚本 / 提交信息草稿
+*.txt
+r*.mjs
+d*.mjs
+t*.mjs
+uni.mjs
+rename.mjs
+deai.mjs
