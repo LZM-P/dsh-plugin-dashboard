@@ -513,12 +513,12 @@ console.log('write gate')
   // script" and "uninstall every plugin".
   check(
     'explicit opt-in header is honoured',
-    source.includes("String(req.headers['x-dsh-plugin-dashboard'] ?? '') === '1'"),
+    source.includes("String(req.headers['x-dsh-plugin-rack'] ?? '') === '1'"),
   )
   check('same-site fetch is honoured', source.includes("secFetchSite === 'same-origin'"))
   check('a bare curl without provenance is refused', source.includes('write requests need an Origin header'))
   const client = readFileSync(join(root, 'client.js'), 'utf8')
-  check('the panel sends the opt-in header itself', client.includes("'x-dsh-plugin-dashboard': '1'"))
+  check('the panel sends the opt-in header itself', client.includes("'x-dsh-plugin-rack': '1'"))
 }
 
 console.log('profile migration')

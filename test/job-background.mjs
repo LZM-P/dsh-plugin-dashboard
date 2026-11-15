@@ -70,7 +70,7 @@ const server = createServer((req, res) => {
 })
 await new Promise((done) => server.listen(0, '127.0.0.1', done))
 const port = server.address().port
-const base = `http://127.0.0.1:${port}/api/dsh-plugin-dashboard`
+const base = `http://127.0.0.1:${port}/api/dsh-plugin-rack`
 
 function fail(message) {
   console.error('FAIL ' + message)
@@ -105,7 +105,7 @@ await new Promise((resolve, reject) => {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(body),
         // 写接口要求声明意图（面板自己发请求时也带这个头）。裸 POST 会被 403。
-        'x-dsh-plugin-dashboard': '1',
+        'x-dsh-plugin-rack': '1',
       },
     },
     (response) => {
@@ -154,7 +154,7 @@ else console.log('ok   the failure is reported, not swallowed')
 // 5. The result is on disk for the next panel visit.
 // The plugin keeps one state directory per profile (see stateDir in index.js),
 // and the fake profile is basename(profile) === 'test'.
-const stateDir = join(home, 'plugin-dashboard', 'profiles', 'test')
+const stateDir = join(home, 'plugin-rack', 'profiles', 'test')
 const jobFile = join(stateDir, 'job.json')
 if (!existsSync(jobFile)) fail('job.json was not written')
 else {
@@ -167,7 +167,7 @@ else {
 async function postJob(payload) {
   const response = await fetch(base + '/job', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-dsh-plugin-dashboard': '1' },
+    headers: { 'content-type': 'application/json', 'x-dsh-plugin-rack': '1' },
     body: JSON.stringify(payload),
   })
   return response.status

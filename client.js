@@ -6,14 +6,14 @@
  * Client-side Remote access policy.
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-plugin-dashboard',
+  id: 'dsh-plugin-rack',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
 
-    const PANEL_ID = 'plugin-dashboard';
-    const API = '/api/dsh-plugin-dashboard';
-    const NS = 'plugin-dashboard';
+    const PANEL_ID = 'plugin-rack';
+    const API = '/api/dsh-plugin-rack';
+    const NS = 'plugin-rack';
 
     const DICT = {
       en: {
@@ -337,8 +337,8 @@ window.__ModuleLoader__.load({
     };
 
     // 哪个任务的结果已经报过了。存在 localStorage 里，面板关掉再打开不会重复弹。
-    const JOB_SEEN_KEY = 'plugin-dashboard:seenJob';
-    const LANG_KEY = 'plugin-dashboard:lang';
+    const JOB_SEEN_KEY = 'plugin-rack:seenJob';
+    const LANG_KEY = 'plugin-rack:lang';
     const DEFAULT_LANG = 'zh';
 
     function storedLang() {
@@ -429,7 +429,7 @@ window.__ModuleLoader__.load({
                 accept: 'application/json',
                 // 和宿主端的写操作闸门配对：面板自己永远带这个头，所以即使
                 // 某个环境下浏览器没发 Origin / Sec-Fetch-Site 也照样放行。
-                'x-dsh-plugin-dashboard': '1',
+                'x-dsh-plugin-rack': '1',
               },
               body: JSON.stringify(body),
             };

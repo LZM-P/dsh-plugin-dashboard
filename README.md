@@ -123,7 +123,7 @@ dsh plugin add dsh-plugin-dashboard
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.js` | 宿主端：注册 `/api/dsh-plugin-dashboard` 前缀路由，负责读取插件状态、批量操作、更新与安装卸载 |
+| `index.js` | 宿主端：注册 `/api/dsh-plugin-rack` 前缀路由，负责读取插件状态、批量操作、更新与安装卸载 |
 | `client.js` | 客户端：侧边栏图标 + `main` 面板的界面（无需构建步骤，浏览器直接加载） |
 | `cordis.patch.yml` | bundle 补丁，插入 `plugin-dashboard` 这一行 |
 | `locale/{en,zh}.json` | 插件名与描述（插件管理页展示用） |
@@ -135,27 +135,27 @@ dsh plugin add dsh-plugin-dashboard
 宿主端只暴露一个同源前缀路由，客户端直接用 `fetch` 调用，因此**不依赖** `remoteAccess` 对 `pluginManager/*` 的授权策略：
 
 ```
-GET  /api/dsh-plugin-dashboard/ping        存活探测，不碰任何服务
-GET  /api/dsh-plugin-dashboard/            ping 的别名
-GET  /api/dsh-plugin-dashboard/state       全部插件行 + 自动名单 + 批量进度
-GET  /api/dsh-plugin-dashboard/detail      某个插件的包信息（?entryId=）
-GET  /api/dsh-plugin-dashboard/updates     检查更新（按精确版本锁定的依赖）
-GET  /api/dsh-plugin-dashboard/extras      非精确版本的安装来源（github / tar 包 / 本地文件 / 软链），供更新页分流
-GET  /api/dsh-plugin-dashboard/updatelog   上一次更新的日志
-GET  /api/dsh-plugin-dashboard/registries  当前生效的 registry
-GET  /api/dsh-plugin-dashboard/removable   可以卸载的插件名单
-GET  /api/dsh-plugin-dashboard/inspect     安装预检（?spec=，只查不装）
-GET  /api/dsh-plugin-dashboard/fileplan    ?name= 本地 file: 依赖会升到哪个版本
-GET  /api/dsh-plugin-dashboard/job         正在跑的装包任务，或上一次的结果（running / finishedAt / interrupted）+ 待装队列
-POST /api/dsh-plugin-dashboard/job         { action: 'cancel' } 取消正在跑的那一次
-GET  /api/dsh-plugin-dashboard/summary     只读精简行，给脚本和 agent 用
-POST /api/dsh-plugin-dashboard/plugin      { entryId, enabled?, auto? }
-POST /api/dsh-plugin-dashboard/bulk        { enabled, scope, save?, cancel? }
-POST /api/dsh-plugin-dashboard/roster      { mode: 'group', scope, auto }
-POST /api/dsh-plugin-dashboard/updates     { names: [...] }
-POST /api/dsh-plugin-dashboard/extras      { name, action }
-POST /api/dsh-plugin-dashboard/install     { spec }
-POST /api/dsh-plugin-dashboard/uninstall   { name }
+GET  /api/dsh-plugin-rack/ping        存活探测，不碰任何服务
+GET  /api/dsh-plugin-rack/            ping 的别名
+GET  /api/dsh-plugin-rack/state       全部插件行 + 自动名单 + 批量进度
+GET  /api/dsh-plugin-rack/detail      某个插件的包信息（?entryId=）
+GET  /api/dsh-plugin-rack/updates     检查更新（按精确版本锁定的依赖）
+GET  /api/dsh-plugin-rack/extras      非精确版本的安装来源（github / tar 包 / 本地文件 / 软链），供更新页分流
+GET  /api/dsh-plugin-rack/updatelog   上一次更新的日志
+GET  /api/dsh-plugin-rack/registries  当前生效的 registry
+GET  /api/dsh-plugin-rack/removable   可以卸载的插件名单
+GET  /api/dsh-plugin-rack/inspect     安装预检（?spec=，只查不装）
+GET  /api/dsh-plugin-rack/fileplan    ?name= 本地 file: 依赖会升到哪个版本
+GET  /api/dsh-plugin-rack/job         正在跑的装包任务，或上一次的结果（running / finishedAt / interrupted）+ 待装队列
+POST /api/dsh-plugin-rack/job         { action: 'cancel' } 取消正在跑的那一次
+GET  /api/dsh-plugin-rack/summary     只读精简行，给脚本和 agent 用
+POST /api/dsh-plugin-rack/plugin      { entryId, enabled?, auto? }
+POST /api/dsh-plugin-rack/bulk        { enabled, scope, save?, cancel? }
+POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
+POST /api/dsh-plugin-rack/updates     { names: [...] }
+POST /api/dsh-plugin-rack/extras      { name, action }
+POST /api/dsh-plugin-rack/install     { spec }
+POST /api/dsh-plugin-rack/uninstall   { name }
 ```
 
 ### `save` 模式
@@ -184,7 +184,7 @@ POST /api/dsh-plugin-dashboard/uninstall   { name }
 
    它**不是鉴权**：本机任何拿到这个端口的脚本，加一行请求头就能过。真要防住同机脚本得引入 token 或随机口令，目前没有做，也不假装做了。面板自己永远带这个头；写脚本调接口时也带一个：
    ```bash
-   curl -X POST http://127.0.0.1:9546/api/dsh-plugin-dashboard/bulk \
+   curl -X POST http://127.0.0.1:9546/api/dsh-plugin-rack/bulk \
      -H 'content-type: application/json' \
      -H 'x-dsh-plugin-dashboard: 1' \
      -d '{"enabled":false,"scope":"installed"}'

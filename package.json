@@ -1,5 +1,5 @@
 {
-  "name": "dsh-plugin-dashboard",
+  "name": "dsh-plugin-rack",
   "version": "0.1.0",
   "type": "module",
   "description": "DSH 插件管理：所有插件一屏看完，一个开关直接开关，更新完自动热替换不用重启。/ Plugin rack for DSH: every plugin in one list with a power switch, an auto/manual flag that scopes the one-click bulk actions, and hot-swapped updates that need no restart.",
@@ -7,10 +7,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/LZM-P/dsh-plugin-dashboard"
+    "url": "https://github.com/LZM-P/dsh-plugin-rack"
   },
-  "homepage": "https://github.com/LZM-P/dsh-plugin-dashboard#readme",
-  "bugs": "https://github.com/LZM-P/dsh-plugin-dashboard/issues",
+  "homepage": "https://github.com/LZM-P/dsh-plugin-rack#readme",
+  "bugs": "https://github.com/LZM-P/dsh-plugin-rack/issues",
   "engines": {
     "node": ">=20"
   },

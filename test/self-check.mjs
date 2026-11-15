@@ -73,10 +73,10 @@ console.log('routes')
     }
   }
   check('ROUTES table parsed', routes.size > 0, String(routes.size))
-  // The header comment lists the routes as "GET  /api/dsh-plugin-dashboard/<path>".
+  // The header comment lists the routes as "GET  /api/dsh-plugin-rack/<path>".
   const header = index.slice(0, index.indexOf('*/'))
   const documented = new Set()
-  for (const match of header.matchAll(/\b(GET|POST)\s+\/api\/dsh-plugin-dashboard\/([a-z]*)/g)) {
+  for (const match of header.matchAll(/\b(GET|POST)\s+\/api\/dsh-plugin-rack\/([a-z]*)/g)) {
     documented.add(match[1].toUpperCase() + ' /' + match[2])
   }
   const missing = [...routes].filter((route) => !documented.has(route))
