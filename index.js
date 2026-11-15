@@ -1991,6 +1991,31 @@ const IDLE_WAIT_MS = 3 * 60 * 1000
 const BATCH_TIMEOUT = 25 * 60 * 1000
 
 /**
+ * One probe of a single package, inside the batch budget.
+ *
+ * A probe exists to find out *whether* a known-suspect package installs, and a
+ * package that cannot install usually says so in the first seconds (404, no
+ * matching version, peer conflict). Inheriting the 25-minute batch budget would
+ * let one hung registry call eat the whole update.
+ */
+const SINGLE_TIMEOUT = 90 * 1000
+
+/**
+ * How many times the install loop may go back to pnpm.
+ *
+ * One clean attempt, then one retry per round of blamed packages. Four is
+ * enough to peel off a handful of bad packages while keeping the worst case
+ * (a broken registry) from turning into a pnpm storm.
+ */
+const MAX_INSTALL_ROUNDS = 4
+
+/** Up to this many suspects it is cheaper to probe each one than to bisect. */
+const MAX_SINGLE_PROBES = 8
+
+/** The tail of a command output: pnpm puts the useful line last. */
+const tailOf = (text, max) => (typeof text === 'string' ? text.slice(-max) : '')
+
+/**
  * Permit one exact version through pnpm's supply-chain age policy.
  *
  * The profile carries a `minimumReleaseAgeExclude` list in pnpm-workspace.yaml
@@ -2100,6 +2125,140 @@ async function hotSwapUpdated(ctx) {
   }
 }
 
+/**
+ * Which package names does pnpm's failure output actually blame?
+ *
+ * A batch install fails as one block, and the package it is about is named
+ * inside that block — `ERR_PNPM_FETCH_404 GET .../dsh-x/-/dsh-x-1.0.0.tgz`,
+ * `No matching version found for dsh-y@9.9.9`. Removing that name and retrying
+ * the rest is what turns "8 packages failed, nothing installed" into "7
+ * installed, this one did not".
+ *
+ * A name only counts when it appears on, or within two lines of, an error-ish
+ * line. Otherwise a package that merely appears in a progress line would be
+ * blamed for someone else's failure — and silently skipped, which is worse than
+ * retrying it.
+ *
+ * Returns [] when nothing can be attributed; callers then probe one by one.
+ * Exported for test/batch-fallback.mjs.
+ */
+export function blamePackages(output, items) {
+  if (typeof output !== 'string' || output === '') return []
+  const lines = output.split(/\r?\n/)
+  const errorish =
+    /ERR_PNPM_|EINTEGRITY|ETARGET|404|not found|no matching version|cannot find|could not be resolved|unmet peer|is not in the npm registry|integrity/i
+  const hot = []
+  for (let index = 0; index < lines.length; index += 1) {
+    if (errorish.test(lines[index])) hot.push(index)
+  }
+  if (hot.length === 0) return []
+  const blamed = []
+  for (const item of items) {
+    const plain = String(item.name)
+    // pnpm prints scoped packages percent-encoded in URLs, and it does not
+    // always encode the same characters: `@scope%2fpkg` and `%40scope%2fpkg`
+    // both occur, so try every spelling before giving up on the name.
+    const slashOnly = plain.replace('/', '%2f')
+    const fully = slashOnly.replace('@', '%40')
+    const needles = [...new Set([plain, slashOnly, fully])]
+    let hit = false
+    for (const needle of needles) {
+      const lowered = needle.toLowerCase()
+      for (let index = 0; index < lines.length && !hit; index += 1) {
+        if (!lines[index].toLowerCase().includes(lowered)) continue
+        hit = hot.some(at => Math.abs(at - index) <= 2)
+      }
+      if (hit) break
+    }
+    if (hit) blamed.push(plain)
+  }
+  return blamed
+}
+
+/**
+ * Install a set of exact versions, degrading instead of failing as a whole.
+ *
+ * `pnpm add a b c` is all-or-nothing: one bad package and every package in the
+ * batch stays on its old version, with a single "the batch failed" message that
+ * names none of them. This loop retries what can still succeed:
+ *
+ *   1. install everything; on failure, blame the names pnpm printed and retry
+ *      the rest (at most MAX_INSTALL_ROUNDS pnpm runs);
+ *   2. when no name can be attributed, probe each suspect alone (bounded by
+ *      MAX_SINGLE_PROBES and by the caller's budget);
+ *   3. stop when the budget or the round cap runs out, and report what was
+ *      installed and what was not — never a silent partial state.
+ *
+ * `install` is injected so this can be tested without pnpm: it receives the
+ * batch and a timeout, and resolves { code, output }.
+ *
+ * Exported for test/batch-fallback.mjs.
+ */
+export async function installWithFallback(options) {
+  const items = Array.isArray(options.items) ? options.items : []
+  const install = options.install
+  const cancelled = typeof options.cancelled === 'function' ? options.cancelled : () => false
+  const budgetMs = Number.isFinite(options.budgetMs) ? options.budgetMs : BATCH_TIMEOUT
+  const maxRounds = Number.isFinite(options.rounds) ? options.rounds : MAX_INSTALL_ROUNDS
+  const maxProbes = Number.isFinite(options.probes) ? options.probes : MAX_SINGLE_PROBES
+  const deadline = Date.now() + budgetMs
+  const installed = []
+  const failed = []
+  let output = ''
+  let remaining = items.slice()
+  let rounds = 0
+  let stopped = false
+  // Never hand pnpm a non-positive timeout: a spent budget must still allow the
+  // in-flight retry to fail quickly and report, not hang until the outer kill.
+  const budget = limit => Math.max(5_000, Math.min(limit, deadline - Date.now()))
+  while (remaining.length > 0) {
+    if (cancelled()) {
+      stopped = true
+      break
+    }
+    rounds += 1
+    const batch = remaining
+    const result = await install(batch, budget(BATCH_TIMEOUT))
+    output = typeof result?.output === 'string' ? result.output : ''
+    if (result?.code === 0) {
+      for (const item of batch) installed.push(item)
+      remaining = []
+      break
+    }
+    if (cancelled()) {
+      stopped = true
+      break
+    }
+    if (Date.now() >= deadline || rounds >= maxRounds) break
+    const blamed = blamePackages(output, batch)
+    if (blamed.length > 0) {
+      for (const name of blamed) failed.push({ name, output: tailOf(output, 1200) })
+      remaining = batch.filter(item => !blamed.includes(item.name))
+      continue
+    }
+    if (batch.length === 1) {
+      failed.push({ name: batch[0].name, output: tailOf(output, 1200) })
+      remaining = []
+      break
+    }
+    if (batch.length <= maxProbes) {
+      for (const item of batch) {
+        if (cancelled()) {
+          stopped = true
+          break
+        }
+        const single = await install([item], budget(SINGLE_TIMEOUT))
+        if (single?.code === 0) installed.push(item)
+        else failed.push({ name: item.name, output: tailOf(typeof single?.output === 'string' ? single.output : '', 1200) })
+      }
+      remaining = []
+    }
+    break
+  }
+  // Whatever never got a turn is a failure, not a silent drop.
+  if (!stopped) for (const item of remaining) failed.push({ name: item.name, output: tailOf(output, 1200) })
+  return { installed, failed, output, cancelled: stopped }
+}
 async function applyUpdates(ctx, names, pinned = null, job = null) {
   const facts = profileFacts(ctx)
   if (facts === null) return { ok: false, message: 'profile package.json is unavailable' }
@@ -2251,15 +2410,33 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
   }
 
   activeJobStage = 'install'
-  const args = ['add', ...planned.map(item => `${item.name}@${item.latest}`), '--save-exact', '--prefer-offline']
-  let result = { code: -1, output: 'pnpm did not run' }
+  // 分轮安装：一轮失败不等于全部失败。peel-off 的规则都在 installWithFallback 里，
+  // 这里只负责把 pnpm 的那一次运行接上，并把结果整理成 job 能汇报的形状。
+  const installBatch = (batch, timeoutMs) =>
+    runPnpm(
+      script,
+      ['add', ...batch.map(item => `${item.name}@${item.latest}`), '--save-exact', '--prefer-offline'],
+      facts.dir,
+      timeoutMs,
+    )
+  let step
   try {
-    result = await runPnpm(script, args, facts.dir, BATCH_TIMEOUT)
+    step = await installWithFallback({
+      items: planned,
+      install: installBatch,
+      cancelled: () => jobCancelled(job),
+    })
   } finally {
     release()
   }
+  const installed = step.installed
+  const failures = step.failed
+  const cancelledMidway = step.cancelled
+  const result = { code: failures.length === 0 && installed.length > 0 ? 0 : -1, output: step.output }
 
-  if (result.code !== 0) {
+  // 一个都没装上才算整体失败：恢复三个文件、把 node_modules 同步回去。
+  // 只要有装上的，就不能整批回滚 —— 那会把已经成功的也一起撤掉。
+  if (installed.length === 0) {
     for (const [file, text] of backup) writeFileSync(file, text, 'utf8')
     // node_modules still holds whatever did install, and the host loads from
     // there — restoring the manifests alone would leave the update live.
@@ -2296,7 +2473,10 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
       ok: false,
       rolledBack: true,
       updated: [],
-      failed: { name: `${planned.length} 个包`, output: result.output.slice(-1500) },
+      failed:
+        failures.length === 0
+          ? [{ name: `${planned.length} 个包`, output: tailOf(result.output, 1500) }]
+          : failures,
       resync: resyncState,
       log,
       message:
@@ -2304,6 +2484,28 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
         (resyncState === 'failed'
           ? '；node_modules 重同步未完成，重启前请再执行一次更新或手动 pnpm install'
           : ''),
+    }
+  }
+
+  if (cancelledMidway) {
+    // 取消发生在已经有包装好之后：保留已装的，不再为了「干净」跑一次回滚。
+    activeJobStage = null
+    const log = writeUpdateLog(
+      `CANCELLED with ${installed.length} package(s) installed`,
+      [
+        `installed: ${installed.map(item => `${item.name} ${item.current} -> ${item.latest}`).join(', ')}`,
+        `not installed: ${failures.map(one => one.name).join(', ')}`,
+        '',
+        result.output,
+      ].join('\n'),
+    )
+    return {
+      ok: true,
+      cancelled: true,
+      updated: installed.map(item => ({ name: item.name, from: item.current, to: item.latest })),
+      failed: failures,
+      log,
+      message: `已取消：${installed.length} 个包已经装好并保留，其余没有改动`,
     }
   }
 
@@ -2322,9 +2524,9 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
     // A busy agent leaves the restart advice in place.
   }
   const log = writeUpdateLog(
-    `OK ${planned.length} package(s)`,
+    `OK ${installed.length} package(s)${failures.length === 0 ? '' : `, ${failures.length} failed`}`,
     [
-      `updated: ${planned.map(item => `${item.name} ${item.current} -> ${item.latest}`).join(', ')}`,
+      `updated: ${installed.map(item => `${item.name} ${item.current} -> ${item.latest}`).join(', ')}`,
       `whitelist entries added: ${allowed}`,
       `hot swap: ${swap.ok === true ? 'ok' : swap.reason}`,
       `idle gate: ${unguarded ? 'unavailable (host exposes no agents service)' : 'held'}`,
@@ -2332,18 +2534,23 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
       result.output.slice(-4000),
     ].join('\n'),
   )
+  // 两条提醒可以同时成立（部分失败 + 没有维护门），拼在一起而不是互相覆盖。
+  const notes = []
+  if (failures.length > 0) notes.push(`已更新 ${installed.length} 个；${failures.length} 个没装上（见失败详情），它们仍是旧版本`)
+  if (unguarded) notes.push('宿主没有 agents 服务：这次没等所有会话空闲就改动了 node_modules')
   return {
     ok: true,
-    updated: planned.map(item => ({ name: item.name, from: item.current, to: item.latest })),
+    updated: installed.map(item => ({ name: item.name, from: item.current, to: item.latest })),
+    // 部分成功也要如实说：装上了哪些、哪些没装上。
+    ...(failures.length > 0 ? { failed: failures, partial: true } : {}),
     // Reported rather than swallowed: the user asked to update these, and the
     // honest answer is "the range you wrote excludes the new version".
     ...(outOfRange.length > 0 ? { outOfRange } : {}),
     hotSwap: swap,
     restart: swap.ok !== true,
     // 没有维护门时如实上报：用户有权知道这次是在会话可能正跑着的时候改了 node_modules。
-    ...(unguarded
-      ? { unguarded: true, message: '已完成，但宿主没有 agents 服务：这次没等所有会话空闲就改动了 node_modules' }
-      : {}),
+    ...(unguarded ? { unguarded: true } : {}),
+    ...(notes.length > 0 ? { message: notes.join('；') } : {}),
     log,
   }
 }
