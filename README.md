@@ -241,14 +241,15 @@ POST /api/dsh-plugin-rack/uninstall   { name }
 
 ```bash
 npm ci         # 只装 eslint + typescript（开发依赖，发布包不含 node_modules）
-npm test       # 六套：自检 / 行为 / 范围算术 / 后台作业 / 下载 / pnpm 启动
+npm test       # 九套：自检 / 行为 / 范围算术 / 批量降级 / 迁移 / 客户端渲染 / 后台作业 / 下载 / pnpm 启动
 npm run lint   # eslint（no-dupe-keys、no-undef 在这套配置下抓出过两处真 bug）
 npm run types  # tsc --checkJs，只覆盖 lib/（JSDoc 当类型，不引入构建步骤）
 ```
 
 - 范围算术只有一份实现：`lib/spec.js`。`index.js` import 它，`test/spec.mjs` 直接跑它，所以「测试通过的是一套逻辑、线上跑的是另一套」不会发生。
 - CI 在 Windows 上跑 Node 20 与 22；另有一格把 `npm pack` 出来的 tarball 解压再跑一遍测试——`files` 里漏了哪个文件，本地是发现不了的。
-- 发布：`NPM_TOKEN=… npm run publish`。token 只从环境变量读，版本已存在会直接拒绝，不会落进任何文件。
+- 发一个版本：`NPM_TOKEN=… node scripts/release.mjs patch`。它按顺序做「工作区干净 → client.js 是新的 → 测试 → lint → 类型 → 同步 bump 两个版本号 → 发布 → 等 registry 真的能取到这个版本」。发布仪式手工走过四遍，每次都栽在同一处：改完代码忘了 `npm run build`、只改了 package.json 忘了 lock、registry 延迟期把 404 当成失败。
+- 打 tag：`node scripts/tag.mjs`。当前网络下 `git push` 走不通（直连 21 秒超时、代理 TLS 握手失败），这个脚本改走 `api.github.com` 建附注 tag，并且会先确认那个 commit 真的在远端分支上——不会造出一个指向本地孤魂的 tag。
 
 ## English
 
