@@ -26,6 +26,8 @@ jobs:
           node --check index.js
           node --check client.js
           node --check lib/spec.js
+      - name: Client build is current
+        run: node scripts/build-client.mjs --check
       - name: Tests
         run: npm test
       - name: Lint
@@ -58,10 +60,14 @@ jobs:
           node --check index.js
           node --check client.js
           node -e "
-            const s = require('./lib/spec.js');
-            if (!s.satisfiesSpec('1.9.0', '^1.2.3')) throw new Error('caret broke');
-            if (s.satisfiesSpec('0.3.0', '^0.2.3')) throw new Error('0.x minor lock broke');
-            const p = require('./package.json');
-            if (!p.version) throw new Error('no version');
-            console.log('packed ' + p.name + '@' + p.version + ' loads');
+            import('./lib/spec.js').then((s) => {
+              if (!s.satisfiesSpec('1.9.0', '^1.2.3')) throw new Error('caret broke');
+              if (s.satisfiesSpec('0.3.0', '^0.2.3')) throw new Error('0.x minor lock broke');
+              if (!s.satisfiesSpec('1.5.0', '1.2.3 - 2.0.0')) throw new Error('hyphen broke');
+              if (!s.satisfiesSpec('3.1.0', '^1.0.0 || ^3.0.0')) throw new Error('union broke');
+              if (s.satisfiesSpec('1.9.9', '1.2')) throw new Error('wildcard broke');
+              const p = require('./package.json');
+              if (!p.version) throw new Error('no version');
+              console.log('packed ' + p.name + '@' + p.version + ' loads');
+            });
           "

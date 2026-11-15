@@ -1,20 +1,13 @@
 /**
- * Client half of the plugin dashboard.
+ * Client half of the plugin rack.
  *
- * Registers a sidebar entry and the matching main panel. Every write goes to
- * the Host half over the same-origin JSON route, so nothing here depends on the
- * Client-side Remote access policy.
+ * GENERATED FILE — edit src/client/*.js and run `node scripts/build-client.mjs`.
+ * The module loader takes one plain script, so the parts are concatenated here
+ * instead of being imported at runtime.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-plugin-rack',
   factory(require) {
-    const React = require('react');
-    const h = React.createElement;
-
-    const PANEL_ID = 'plugin-rack';
-    const API = '/api/dsh-plugin-rack';
-    const NS = 'plugin-rack';
-
     const DICT = {
       en: {
         title: 'Plugin rack',
@@ -418,57 +411,6 @@ window.__ModuleLoader__.load({
     // working — otherwise the UI reports a failure for a run that succeeds.
     const WRITE_TIMEOUT_MS = 60 * 60 * 1000;
 
-    async function request(path, body, options) {
-      const timeoutMs =
-        options && typeof options.timeoutMs === 'number' ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
-      const init =
-        body === undefined
-          ? { method: 'GET', headers: { accept: 'application/json' } }
-          : {
-              method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                accept: 'application/json',
-                // 和宿主端的写操作闸门配对：面板自己永远带这个头，所以即使
-                // 某个环境下浏览器没发 Origin / Sec-Fetch-Site 也照样放行。
-                'x-dsh-plugin-rack': '1',
-              },
-              body: JSON.stringify(body),
-            };
-      // Without this a stuck Host call pins busy/pending forever and the only
-      // way out is reloading the page.
-      const controller = new AbortController();
-      init.signal = controller.signal;
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      let response;
-      try {
-        response = await fetch(API + path, init);
-      } catch (error) {
-        void error;
-        throw new Error(controller.signal.aborted ? 'timeout' : 'unreachable');
-      } finally {
-        clearTimeout(timer);
-      }
-      let data = null;
-      try {
-        data = await response.json();
-      } catch (error) {
-        void error;
-        data = null;
-      }
-      // 服务端失败时常常带着细节（回滚那段 pnpm 输出在 data.failed.output 里），
-      // 之前只取 message 就抛，于是「为什么失败」的信息到不了界面。把整个 data
-      // 挂到 error 上，调用方要用就有。
-      if (!response.ok || data === null || data.ok !== true) {
-        const message =
-          (data && data.message) || (response.ok ? 'malformed response' : response.status + ' ' + response.statusText);
-        const error = new Error(message);
-        if (data !== null && typeof data === 'object') error.data = data;
-        throw error;
-      }
-      return data;
-    }
-
     /**
      * 把勾选的包名按更新通道分组。
      *
@@ -700,6 +642,53 @@ window.__ModuleLoader__.load({
         return true;
       });
     }
+
+
+/**
+ * What to show at the right end of an installed plugin row.
+ *
+ * The cases are deliberately distinct: a plain npm install gets no label at all
+ * (it is the default — a label there is pure noise), a row installed some other
+ * way gets a small tag naming the source, and a row with an update gets a button
+ * — unless the release sits outside the version range the user wrote, in which
+ * case a button would be a lie, so it becomes a warning tag instead.
+ *
+ * @param {object|undefined} info  the check result for this row, if any
+ * @param {string|undefined} src  how the row itself was installed
+ * @returns {{kind: 'none'}|{kind: 'src', label: string}|{kind: 'outOfRange', label: string, spec: string}|{kind: 'update', label: string, source: string}}
+ */
+function badgeOf(info, src) {
+  if (info === undefined || info === null) {
+    return src === undefined || src === 'npm' ? { kind: 'none' } : { kind: 'src', label: src };
+  }
+  if (info.outOfRange === true) {
+    return { kind: 'outOfRange', label: info.label ?? '', spec: info.spec ?? '' };
+  }
+  return { kind: 'update', label: info.label ?? '', source: info.source ?? 'npm' };
+}
+
+/**
+ * Which of the update page's states to render.
+ *
+ * 'none' used to be decided on hasUpdate alone, which made the page claim there
+ * was nothing to do while listing out-of-range releases underneath. Both counts
+ * decide it now.
+ *
+ * @param {{ok?: boolean, message?: string, rows?: Array<{hasUpdate?: boolean, outOfRange?: boolean}>}|null} updates
+ * @param {boolean} checking
+ * @returns {{kind: 'idle'|'checking'|'error'|'none'|'list', message?: string, updatable?: Array<object>, outOfRange?: Array<object>}}
+ */
+function updatePageState(updates, checking) {
+  if (updates === null || updates === undefined) {
+    return { kind: checking === true ? 'checking' : 'idle' };
+  }
+  if (updates.ok !== true) return { kind: 'error', message: String(updates.message ?? 'error') };
+  const rows = Array.isArray(updates.rows) ? updates.rows : [];
+  const updatable = rows.filter((row) => row.hasUpdate === true);
+  const outOfRange = rows.filter((row) => row.outOfRange === true);
+  if (updatable.length === 0 && outOfRange.length === 0) return { kind: 'none' };
+  return { kind: 'list', updatable: updatable, outOfRange: outOfRange };
+}
 
     const CSS = [
       '.pd-root{display:flex;flex-direction:column;height:100%;min-height:0;box-sizing:border-box;',
@@ -949,6 +938,63 @@ window.__ModuleLoader__.load({
       '.pd-update-item{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary)}',
       '.pd-update-log-out{margin-top:6px;padding-top:6px;border-top:1px solid var(--dsw-alias-border-l3);font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:pre-wrap;word-break:break-all;max-height:140px;overflow:auto}',
     ].join('');
+
+    const React = require('react');
+    const h = React.createElement;
+
+    const PANEL_ID = 'plugin-rack';
+    const API = '/api/dsh-plugin-rack';
+    const NS = 'plugin-rack';
+    async function request(path, body, options) {
+      const timeoutMs =
+        options && typeof options.timeoutMs === 'number' ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
+      const init =
+        body === undefined
+          ? { method: 'GET', headers: { accept: 'application/json' } }
+          : {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                accept: 'application/json',
+                // 和宿主端的写操作闸门配对：面板自己永远带这个头，所以即使
+                // 某个环境下浏览器没发 Origin / Sec-Fetch-Site 也照样放行。
+                'x-dsh-plugin-rack': '1',
+              },
+              body: JSON.stringify(body),
+            };
+      // Without this a stuck Host call pins busy/pending forever and the only
+      // way out is reloading the page.
+      const controller = new AbortController();
+      init.signal = controller.signal;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let response;
+      try {
+        response = await fetch(API + path, init);
+      } catch (error) {
+        void error;
+        throw new Error(controller.signal.aborted ? 'timeout' : 'unreachable');
+      } finally {
+        clearTimeout(timer);
+      }
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (error) {
+        void error;
+        data = null;
+      }
+      // 服务端失败时常常带着细节（回滚那段 pnpm 输出在 data.failed.output 里），
+      // 之前只取 message 就抛，于是「为什么失败」的信息到不了界面。把整个 data
+      // 挂到 error 上，调用方要用就有。
+      if (!response.ok || data === null || data.ok !== true) {
+        const message =
+          (data && data.message) || (response.ok ? 'malformed response' : response.status + ' ' + response.statusText);
+        const error = new Error(message);
+        if (data !== null && typeof data === 'object') error.data = data;
+        throw error;
+      }
+      return data;
+    }
 
     function SidebarIcon(props) {
       const size = props && typeof props.size === 'number' ? props.size : 18;
@@ -2055,21 +2101,18 @@ window.__ModuleLoader__.load({
                 { className: 'pd-name-act', onClick: (event) => event.stopPropagation() },
                 (() => {
                   const info = updateOf.get(row.name);
-                  if (info === undefined) {
-                    const src = srcOf.get(row.name);
-                    // 普通 npm 装的是默认情况，标出来只是噪音；只有「不是按常规方式
-                    // 装的」才值得在主列表里露一个标签。
-                    return src === undefined || src === 'npm' ? null : h('span', { className: 'pd-src' }, src);
-                  }
+                  const badge = badgeOf(info, srcOf.get(row.name));
+                  if (badge.kind === 'none') return null;
+                  if (badge.kind === 'src') return h('span', { className: 'pd-src' }, badge.label);
                   const updating = pending['update:' + row.entryId] === true;
-                  if (info.outOfRange === true) {
+                  if (badge.kind === 'outOfRange') {
                     // 有新版、但不在 package.json 声明的范围内：这里不能给按钮，
                     // 点了也不会升，只会让人以为按钮失灵。
                     return h(
                       'span',
                       {
                         className: 'pd-src pd-src-warn',
-                        title: t('updateOutOfRangeHint', { v: info.label, spec: info.spec }),
+                        title: t('updateOutOfRangeHint', { v: badge.label, spec: badge.spec }),
                       },
                       t('updateOutOfRange'),
                     );
@@ -2572,24 +2615,19 @@ window.__ModuleLoader__.load({
                     : String(logText.text).slice(-4000),
                 ),
               ),
-          updates === null
-            ? h(
-                'div',
-                { className: 'pd-empty' },
-                updatesBusy === 'check' ? t('updateChecking') : t('updateIdle'),
-              )
-            : updates.ok !== true
-              ? h('div', { className: 'pd-empty' }, String(updates.message || 'error'))
-              : updates.rows.filter((row) => row.hasUpdate).length === 0 &&
-                  updates.rows.filter((row) => row.outOfRange === true).length === 0
-                ? h('div', { className: 'pd-empty' }, t('updateNone'))
-                : updates.rows.filter((row) => row.hasUpdate).map(updateRowNode),
+          (() => {
+            const state = updatePageState(updates, updatesBusy === 'check');
+            if (state.kind === 'list') return state.updatable.map(updateRowNode);
+            if (state.kind === 'error') return h('div', { className: 'pd-empty' }, state.message);
+            if (state.kind === 'none') return h('div', { className: 'pd-empty' }, t('updateNone'));
+            const key = state.kind === 'checking' ? 'updateChecking' : 'updateIdle';
+            return h('div', { className: 'pd-empty' }, t(key));
+          })(),
           (() => {
             // 「有新版但超出范围」单独列一段：它不是错误，也不该被批量更新
             // 静默吞掉，放在主列表下面说明原因最省解释成本。
-            const outOfRange = updates === null || !Array.isArray(updates.rows)
-              ? []
-              : updates.rows.filter((row) => row.outOfRange === true);
+            const state = updatePageState(updates, false);
+            const outOfRange = state.kind === 'list' ? state.outOfRange : [];
             if (outOfRange.length === 0) return null;
             return h(
               'div',
@@ -2907,7 +2945,6 @@ window.__ModuleLoader__.load({
 
       return Dashboard;
     }
-
     return {
       inject: ['slots', 'locale', 'layout'],
       apply(ctx) {
