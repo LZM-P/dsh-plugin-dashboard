@@ -2580,7 +2580,8 @@ window.__ModuleLoader__.load({
               )
             : updates.ok !== true
               ? h('div', { className: 'pd-empty' }, String(updates.message || 'error'))
-              : updates.rows.filter((row) => row.hasUpdate).length === 0
+              : updates.rows.filter((row) => row.hasUpdate).length === 0 &&
+                  updates.rows.filter((row) => row.outOfRange === true).length === 0
                 ? h('div', { className: 'pd-empty' }, t('updateNone'))
                 : updates.rows.filter((row) => row.hasUpdate).map(updateRowNode),
           (() => {
