@@ -47,8 +47,12 @@ if (dryRun) args.push('--dry-run')
 // with its `//host/:_authToken` spelling intact.
 const env = { ...process.env, 'npm_config_//registry.npmjs.org/:_authToken': token }
 
+// npm on Windows is a .cmd shim. Spawning it directly trips a libuv assertion on
+// recent Node releases (UV_HANDLE_CLOSING), so go through cmd.exe instead.
+const command = process.platform === 'win32' ? 'cmd.exe' : 'npm'
+const argv = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm', ...args] : args
 try {
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, { stdio: 'inherit', env })
+  execFileSync(command, argv, { stdio: 'inherit', env })
 } catch {
   console.error('npm publish failed; the registry message above says why.')
   process.exit(1)

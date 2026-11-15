@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/LZM-P/dsh-plugin-rack"
+    "url": "git+https://github.com/LZM-P/dsh-plugin-rack.git"
   },
   "homepage": "https://github.com/LZM-P/dsh-plugin-rack#readme",
   "bugs": "https://github.com/LZM-P/dsh-plugin-rack/issues",
