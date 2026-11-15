@@ -529,6 +529,49 @@ console.log('profile migration')
   check('the whole state directory is the source, not one file', !body.includes("readFileSync(legacy)"))
 }
 
+console.log('a switched-off bundle is still listed')
+{
+  const body = extract('offlineBundles')
+  // The function reads SELF_NAMES from the module scope, so it is injected
+  // here instead of being pulled in with the source slice.
+  const offlineBundles = new Function('SELF_NAMES', 'return (async ' + body + ')')(['dsh-plugin-rack'])
+  const manager = {
+    async listBundles() {
+      return [
+        { name: 'dsh-kept', installed: true, enabled: true, availability: 'profile' },
+        { name: 'dsh-off', installed: true, enabled: false, availability: 'profile', version: '1.2.3' },
+        { name: 'dsh-plugin-rack', installed: true, enabled: false, availability: 'profile' },
+        { name: 'dsh-base', installed: true, enabled: false, availability: 'profile' },
+        { name: 'dsh-never', installed: false, enabled: false, availability: 'missing' },
+      ]
+    },
+  }
+  const rows = await offlineBundles({ pluginManager: manager })
+  check('a switched-off bundle stays visible', rows.map((row) => row.name).join() === 'dsh-off')
+  check('an enabled bundle is not duplicated', !rows.some((row) => row.name === 'dsh-kept'))
+  check('the panel never lists itself in that block', !rows.some((row) => row.name === 'dsh-plugin-rack'))
+  check('the profile roots cannot be switched off from here', !rows.some((row) => row.name === 'dsh-base'))
+  check('an uninstalled bundle is not offered', !rows.some((row) => row.name === 'dsh-never'))
+  check('the version travels for the row', rows[0].version === '1.2.3')
+  const offline = await offlineBundles({})
+  check("a host without listBundles reports nothing", offline.length === 0)
+  const failing = await offlineBundles({
+    pluginManager: {
+      async listBundles() {
+        throw new Error('nope')
+      },
+    },
+  })
+  check("a failing inventory is not an error", failing.length === 0)
+}
+
+console.log('switching a bundle layer back on')
+{
+  check('the write route exists', source.includes("path === '/bundle'"))
+  check('it goes through setBundleEnabled', source.includes('setBundleEnabled(name, body.enabled)'))
+  check('it refuses to switch the panel off', source.includes('the dashboard refuses to switch itself off'))
+  check('it shares the write mutex', source.includes('if (!beginMutation())') && source.includes('endMutation()'))
+}
 console.log('rollback is not cancellable')
 {
   const body = extract('cancelJob')

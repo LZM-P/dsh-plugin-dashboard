@@ -22,9 +22,11 @@
  *   POST /api/dsh-plugin-rack/install     { spec }  through pluginManager.installBundle
  *   POST /api/dsh-plugin-rack/uninstall   { name }  through pluginManager.removeBundle
  *   POST /api/dsh-plugin-rack/plugin      { entryId, enabled?, auto? }
+ *   POST /api/dsh-plugin-rack/bundle      { name, enabled }  compose or drop a bundle layer
  *   POST /api/dsh-plugin-rack/bulk        { enabled, scope?, save?, cancel? }
  *   POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
- *   GET  /api/dsh-plugin-rack/summary     read-only rows for scripts and future agent tools
+ *   GET  /api/dsh-plugin-rack/summary     read-only rows for future agent tools, plus the
+ *                                         installed-but-not-composed bundles (`offline`)
  *   GET  /api/dsh-plugin-rack/job         the install running now, or the last one that finished
  *   POST /api/dsh-plugin-rack/job         { action: 'cancel' }  stop the run that is executing now
  *
@@ -1086,6 +1088,54 @@ async function setOne(ctx, entryId, enabled, known) {
   }
 }
 
+/**
+ * Bundles the profile still has installed but is not composing.
+ *
+ * `listPlugins()` can only report what the loader composed, so a bundle that was
+ * switched off has no row anywhere in the panel — it reads as "the plugin is
+ * gone", and the only way back is the plugin market. `listBundles()` knows the
+ * full inventory: an installed bundle with `enabled: false` is exactly the row
+ * this returns, and `setBundleEnabled()` switches it back on without touching
+ * the dependency at all.
+ *
+ * The profile roots are filtered out: switching either of them off cannot be
+ * recovered from inside the panel.
+ */
+async function offlineBundles(ctx) {
+  const manager = ctx.pluginManager
+  if (manager === null || manager === undefined || typeof manager.listBundles !== 'function') return []
+  let listed = []
+  try {
+    listed = await manager.listBundles()
+  } catch {
+    return []
+  }
+  const roots = new Set([
+    ...SELF_NAMES,
+    'dsh-base',
+    'dsh-web-app',
+    '@deepseek-ai/dsh-base',
+    '@deepseek-ai/dsh-web-app',
+  ])
+  return (Array.isArray(listed) ? listed : [])
+    .filter(bundle => bundle !== null && typeof bundle === 'object')
+    .filter(bundle => bundle.installed === true && bundle.enabled !== true)
+    .filter(bundle => bundle.availability !== 'missing')
+    .filter(bundle => !roots.has(bundle.name))
+    .map(bundle => ({
+      name: String(bundle.name),
+      version: typeof bundle.version === 'string' ? bundle.version : null,
+      official: bundle.official === true,
+      removable: bundle.removable === true,
+      description: typeof bundle.description === 'string' ? bundle.description : null,
+      title:
+        bundle.meta !== null && typeof bundle.meta === 'object' && typeof bundle.meta.title === 'string'
+          ? bundle.meta.title
+          : null,
+      rows: Array.isArray(bundle.rows) ? bundle.rows.length : 0,
+      readOnlyReason: typeof bundle.readOnlyReason === 'string' ? bundle.readOnlyReason : null,
+    }))
+}
 async function actPlugin(ctx, body) {
   const entryId = typeof body.entryId === 'string' ? body.entryId : ''
   if (entryId.length === 0) throw new Error('entryId is required')
@@ -4143,6 +4193,8 @@ async function handle(ctx, req, res) {
     const auto = new Set(state.auto)
     return send(res, 200, {
       ok: true,
+      // 装配层里已安装但没被 compose 的包：关掉之后它们才还能被重新打开。
+      offline: await offlineBundles(ctx),
       rows: rows.map(row => ({
         name: row.name,
         version: row.version,
@@ -4277,6 +4329,30 @@ async function handle(ctx, req, res) {
     }
     try {
       return send(res, 200, await actPlugin(ctx, await readJsonBody(req)))
+    } finally {
+      endMutation()
+    }
+  }
+  if (method === 'POST' && path === '/bundle') {
+    if (!beginMutation()) {
+      return send(res, 200, { ok: false, message: BUSY_MESSAGE })
+    }
+    try {
+      const body = await readJsonBody(req)
+      const name = typeof body.name === 'string' ? body.name.trim() : ''
+      if (name === '') throw new HttpError(400, 'name is required')
+      if (SELF_NAMES.includes(name)) {
+        throw new HttpError(400, 'the dashboard refuses to switch itself off')
+      }
+      if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled must be a boolean')
+      const manager = ctx.pluginManager
+      if (manager === null || manager === undefined || typeof manager.setBundleEnabled !== 'function') {
+        throw new HttpError(500, 'this host cannot switch a bundle layer')
+      }
+      // 先把文件写对，再交给宿主决定是热挂载还是要求重启。
+      const result = await manager.setBundleEnabled(name, body.enabled)
+      cache.clear()
+      return send(res, 200, { ok: true, name, enabled: body.enabled, result })
     } finally {
       endMutation()
     }

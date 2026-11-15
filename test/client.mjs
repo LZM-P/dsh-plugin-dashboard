@@ -145,6 +145,16 @@ check(CSS.includes('.pd-row-uninstall'), 'the uninstall control style exists')
 check(CSS.includes('.pd-src-warn'), 'the out-of-range tag style exists')
 check(CSS.includes('.pd-update-row-busy'), 'a row the host is updating has its own style')
 check(CSS.includes('.pd-update-busy'), 'the per-row spinner is styled')
+check(CSS.includes('.pd-offline'), 'switched-off bundles have their own block')
+check(CSS.includes('.pd-offline-row'), 'each switched-off bundle is a row')
+{
+  for (const [locale, dict] of Object.entries(DICT)) {
+    for (const key of ['offlineTitle', 'offlineHint', 'offlineEnable', 'offlineStale']) {
+      check(typeof dict[key] === 'string' && dict[key].length > 0, locale + ' names ' + key)
+    }
+  }
+  check(fill(DICT.zh.offlineTitle, { n: '3' }).includes('3'), 'the block title carries the count')
+}
 
 // ── the update badge counts both channels ────────────────────────────────────
 {
