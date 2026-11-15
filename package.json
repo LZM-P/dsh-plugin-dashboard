@@ -43,12 +43,14 @@
     "README.md"
   ],
   "scripts": {
-    "check": "node scripts/build-client.mjs --check && node test/self-check.mjs && node test/behaviour.mjs && node test/spec.mjs",
-    "test": "node scripts/build-client.mjs --check && node test/self-check.mjs && node test/behaviour.mjs && node test/spec.mjs && node test/batch-fallback.mjs && node test/client.mjs && node test/job-background.mjs && node test/download.mjs && node test/pnpm-command.mjs",
+    "check": "node scripts/build-client.mjs --check && node test/self-check.mjs && node test/behaviour.mjs && node test/spec.mjs && node test/migration.mjs",
+    "test": "node scripts/build-client.mjs --check && node test/self-check.mjs && node test/behaviour.mjs && node test/spec.mjs && node test/batch-fallback.mjs && node test/migration.mjs && node test/client.mjs && node test/job-background.mjs && node test/download.mjs && node test/pnpm-command.mjs",
     "lint": "eslint .",
     "types": "tsc -p tsconfig.json",
     "build": "node scripts/build-client.mjs",
-    "release": "node scripts/publish.mjs"
+    "release": "node scripts/release.mjs",
+    "tag": "node scripts/tag.mjs",
+    "bump": "npm version patch --no-git-tag-version"
   },
   "dsh": {
     "manifestVersion": 1,

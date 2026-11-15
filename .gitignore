@@ -16,3 +16,6 @@ t*.mjs
 uni.mjs
 rename.mjs
 deai.mjs
+
+# Windows device name some credential helpers drop into the working copy
+CON

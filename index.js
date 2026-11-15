@@ -52,7 +52,8 @@
  * overrides this plugin created are ever removed — so the user can switch
  * plugins off and restart once instead of waiting for a reload per plugin.
  */
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -130,30 +131,25 @@ function stateDir() {
   return profileStateKey === null ? stateBase() : join(stateBase(), 'profiles', profileStateKey)
 }
 
+
 /**
- * Key the state by the profile it belongs to, and carry the legacy single
- * directory over once.
+ * Adopt the state a previous build left behind.
  *
- * The first version of this migration only moved `state.json`, which split one
- * directory into two halves: the roster moved while job.json / queue.json /
- * config.json / the update logs stayed behind. A user upgrading across that
- * release lost a queued update (silently — nothing told them it was dropped),
- * their configured download proxy, and the history of past runs. Everything
- * this plugin owns lives in stateBase(), so everything moves together.
+ * A renamed plugin ships a new state directory (`<home>/plugin-rack/profiles/<key>`
+ * instead of the old name's), so a user who upgrades to it would otherwise boot
+ * into an empty panel: their auto roster, their queued update, their running job
+ * (and the fact it finished), their download proxy, and the history of past runs
+ * would all look gone.
  *
  * Copy is per-file and non-destructive: the old files are left in place, so a
- * machine that runs two profiles against an upgraded build still has one copy
- * of the shared history to fall back on.
+ * machine that runs two profiles against an upgraded build still has one copy of
+ * the shared history to fall back on. Existence wins over the legacy copy — a
+ * file already in the profile directory is newer by definition.
+ *
+ * The whole directory is copied rather than a list of known file names: a state
+ * file added in a later version then migrates too, instead of being silently
+ * left behind by a list nobody remembered to update.
  */
-const LEGACY_CARRY_OVER = [
-  'state.json',
-  'job.json',
-  'queue.json',
-  'config.json',
-  'last-update.log',
-  'update-log.jsonl',
-]
-
 function adoptProfile(ctx) {
   let dir = null
   try {
@@ -166,16 +162,25 @@ function adoptProfile(ctx) {
   const key = basename(dir).replace(/[^A-Za-z0-9._-]+/g, '-')
   if (key === '' || key === '.' || key === '..') return
   profileStateKey = key
-  for (const name of LEGACY_CARRY_OVER) {
+  // 整目录搬，不再维护一份「已知文件」清单：将来新增的状态文件也跟着走。
+  let entries = []
+  try {
+    entries = readdirSync(stateBase(), { withFileTypes: true })
+  } catch {
+    // 旧目录不存在＝没什么可迁的（新装用户就是这种情况）。
+    entries = []
+  }
+  for (const entry of entries) {
+    if (entry.isFile() !== true) continue
+    const name = entry.name
+    if (name === '' || name === '.' || name === '..') continue
     try {
       const target = join(stateDir(), name)
-      const legacy = join(stateBase(), name)
       // Only ever fill a gap: a file that already exists in the profile's own
       // directory is newer than the shared copy by definition.
       if (existsSync(target)) continue
-      if (!existsSync(legacy)) continue
       mkdirSync(stateDir(), { recursive: true })
-      writeFileSync(target, readFileSync(legacy))
+      copyFileSync(join(stateBase(), name), target)
     } catch {
       // Losing one carry-over file is survivable: the roster reseeds, the job
       // page reports "no run", the queue starts empty and the proxy falls back

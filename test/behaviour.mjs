@@ -522,11 +522,11 @@ console.log('write gate')
 console.log('profile migration')
 {
   const body = extract('adoptProfile')
-  for (const file of ['state.json', 'job.json', 'queue.json', 'config.json']) {
-    check('carries ' + file, source.includes("'" + file + "'"))
-  }
-  check('carries both update logs', source.includes("'last-update.log'") && source.includes("'update-log.jsonl'"))
+  check('moves every state file, not a fixed list', body.includes('readdirSync(stateBase()'))
+  check('only regular files are copied', body.includes('entry.isFile() !== true'))
   check('never overwrites an existing target', body.includes('if (existsSync(target)) continue'))
+  check('copies instead of moving, leaving the old copy', body.includes('copyFileSync(') && !body.includes('renameSync('))
+  check('the whole state directory is the source, not one file', !body.includes("readFileSync(legacy)"))
 }
 
 console.log('rollback is not cancellable')
