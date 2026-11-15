@@ -232,6 +232,8 @@
       '.pd-update-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;cursor:pointer}',
       // 已经是最新的行：压暗一档，让"需要动手的"和"不用管的"一眼分开。
       '.pd-update-row-done{opacity:.55;cursor:default}',
+      '.pd-update-row-busy{background:var(--dsw-alias-interactive-bg-hover);cursor:default}',
+      '.pd-update-busy{margin-left:auto;flex:none;border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
       '.pd-update-row-done:hover{opacity:.8}',
       '.pd-update-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-update-name{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',

@@ -880,7 +880,7 @@
           { key: 'plugins', title: t('tabPlugins') },
           { key: 'core', title: t('tabCore') },
           { key: 'failed', title: t('tabFailed') },
-          { key: 'updates', title: t('tabUpdates'), badge: updates === null ? null : updates.updates },
+          { key: 'updates', title: t('tabUpdates'), badge: updates === null && extras === null ? null : updatableTotal(updates, extras) },
         ].map((page) => ({ ...page, rows: pageRows(page.key) }));
 
         const current = pages.find((page) => page.key === tab) || pages[0];
@@ -1532,15 +1532,23 @@
         };
 
         const pickedNames = Object.keys(picked).filter((name) => picked[name] === true);
-        const updateRowNode = (row) =>
-          h(
+        const updateRowNode = (row) => {
+          // The host job runs pnpm once for the whole batch, so no row ever flips
+          // its own phase to "running". Mark the names the job carries instead,
+          // otherwise the banner spins while the list looks dead.
+          const busyNow =
+            job !== null &&
+            job.running === true &&
+            Array.isArray(job.names) &&
+            job.names.indexOf(row.name) >= 0;
+          return h(
             'label',
-            { key: row.name, className: 'pd-update-row' },
+            { key: row.name, className: busyNow ? 'pd-update-row pd-update-row-busy' : 'pd-update-row' },
             h('input', {
               type: 'checkbox',
               className: 'pd-check',
               checked: picked[row.name] === true,
-              disabled: updatesBusy !== '',
+              disabled: updatesBusy !== '' || busyNow,
               onChange: () =>
                 setPicked((prev) => ({ ...prev, [row.name]: prev[row.name] !== true })),
             }),
@@ -1549,7 +1557,9 @@
             typeof row.spec === 'string' && row.kind !== 'exact'
               ? h('code', { className: 'pd-update-spec', title: row.spec }, row.spec)
               : null,
+            busyNow ? h('span', { className: 'pd-spin pd-update-busy', title: t('rowUpdating') }) : null,
           );
+        };
 
         const installPanel = h(
           'div',
@@ -1887,9 +1897,11 @@
                   h(
                     'span',
                     null,
-                    job.stage === 'rollback'
-                      ? t('jobRollingBack')
-                      : t('jobRunning', { n: String(Array.isArray(job.names) ? job.names.length : 0) }),
+                    t('jobRunning', { n: String(Array.isArray(job.names) ? job.names.length : 0) }) +
+                      (jobPhaseKey(job.phase) === null ? '' : ' · ' + t(jobPhaseKey(job.phase))) +
+                      (typeof job.startedAt === 'string' && Number.isFinite(Date.parse(job.startedAt))
+                        ? ' · ' + Math.max(0, Math.round((Date.now() - Date.parse(job.startedAt)) / 1000)) + 's'
+                        : ''),
                   ),
                   // 服务端判断这个任务此刻能不能取消。回滚阶段是唯一必须跑完的
                   // 一段，client 不能靠 job.running 自己猜——那样回滚时按钮还在，

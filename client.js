@@ -144,6 +144,10 @@ window.__ModuleLoader__.load({
         updateNow: 'Update just this plugin',
         jobRunning: 'Host is updating in the background · {n} plugins',
         jobRollingBack: 'Rolling back — this cannot be cancelled',
+        jobPhaseWait: 'waiting for sessions to go idle',
+        jobPhaseDownload: 'downloading',
+        jobPhaseInstall: 'installing',
+        rowUpdating: 'updating',
         jobDone: 'Background update finished',
         jobFailed: 'Background update failed',
         jobInterrupted: 'The last update never finished (host restarted or interrupted)',
@@ -304,6 +308,10 @@ window.__ModuleLoader__.load({
         updateNow: '只更新这一个插件',
         jobRunning: '宿主正在后台更新 · {n} 个插件',
         jobRollingBack: '正在回滚，这一步不能取消',
+        jobPhaseWait: '等待会话空闲',
+        jobPhaseDownload: '正在下载',
+        jobPhaseInstall: '正在安装',
+        rowUpdating: '更新中',
         jobDone: '后台更新已完成',
         jobFailed: '后台更新失败',
         jobInterrupted: '上次更新没跑完（宿主重启或中断）',
@@ -690,6 +698,39 @@ function updatePageState(updates, checking) {
   return { kind: 'list', updatable: updatable, outOfRange: outOfRange };
 }
 
+/**
+ * How many entries across both channels can be updated right now.
+ *
+ * The 更新 tab badge used to read the npm answer alone (`updates.updates`) while
+ * the 「全部更新」button counted the github / tarball rows too, so a panel with
+ * one github update showed "更新 7" next to "全部更新 (8)".
+ *
+ * @param {{rows?: Array<object>}|null} updates
+ * @param {{rows?: Array<object>}|null} extras
+ * @returns {number}
+ */
+function updatableTotal(updates, extras) {
+  const countOf = (answer) => {
+    if (answer === null || typeof answer !== 'object' || !Array.isArray(answer.rows)) return 0;
+    return answer.rows.filter((row) => row !== null && typeof row === 'object' && row.hasUpdate === true).length;
+  };
+  return countOf(updates) + countOf(extras);
+}
+
+/**
+ * Which dictionary key describes the phase the host job is in.
+ *
+ * @param {string|null|undefined} phase
+ * @returns {string|null}
+ */
+function jobPhaseKey(phase) {
+  if (phase === 'start') return 'jobPhaseWait';
+  if (phase === 'download') return 'jobPhaseDownload';
+  if (phase === 'install') return 'jobPhaseInstall';
+  if (phase === 'rollback') return 'jobRollingBack';
+  return null;
+}
+
     const CSS = [
       '.pd-root{display:flex;flex-direction:column;height:100%;min-height:0;box-sizing:border-box;',
       'background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}',
@@ -924,6 +965,8 @@ function updatePageState(updates, checking) {
       '.pd-update-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;cursor:pointer}',
       // 已经是最新的行：压暗一档，让"需要动手的"和"不用管的"一眼分开。
       '.pd-update-row-done{opacity:.55;cursor:default}',
+      '.pd-update-row-busy{background:var(--dsw-alias-interactive-bg-hover);cursor:default}',
+      '.pd-update-busy{margin-left:auto;flex:none;border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
       '.pd-update-row-done:hover{opacity:.8}',
       '.pd-update-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-update-name{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
@@ -1821,7 +1864,7 @@ function updatePageState(updates, checking) {
           { key: 'plugins', title: t('tabPlugins') },
           { key: 'core', title: t('tabCore') },
           { key: 'failed', title: t('tabFailed') },
-          { key: 'updates', title: t('tabUpdates'), badge: updates === null ? null : updates.updates },
+          { key: 'updates', title: t('tabUpdates'), badge: updates === null && extras === null ? null : updatableTotal(updates, extras) },
         ].map((page) => ({ ...page, rows: pageRows(page.key) }));
 
         const current = pages.find((page) => page.key === tab) || pages[0];
@@ -2473,15 +2516,23 @@ function updatePageState(updates, checking) {
         };
 
         const pickedNames = Object.keys(picked).filter((name) => picked[name] === true);
-        const updateRowNode = (row) =>
-          h(
+        const updateRowNode = (row) => {
+          // The host job runs pnpm once for the whole batch, so no row ever flips
+          // its own phase to "running". Mark the names the job carries instead,
+          // otherwise the banner spins while the list looks dead.
+          const busyNow =
+            job !== null &&
+            job.running === true &&
+            Array.isArray(job.names) &&
+            job.names.indexOf(row.name) >= 0;
+          return h(
             'label',
-            { key: row.name, className: 'pd-update-row' },
+            { key: row.name, className: busyNow ? 'pd-update-row pd-update-row-busy' : 'pd-update-row' },
             h('input', {
               type: 'checkbox',
               className: 'pd-check',
               checked: picked[row.name] === true,
-              disabled: updatesBusy !== '',
+              disabled: updatesBusy !== '' || busyNow,
               onChange: () =>
                 setPicked((prev) => ({ ...prev, [row.name]: prev[row.name] !== true })),
             }),
@@ -2490,7 +2541,9 @@ function updatePageState(updates, checking) {
             typeof row.spec === 'string' && row.kind !== 'exact'
               ? h('code', { className: 'pd-update-spec', title: row.spec }, row.spec)
               : null,
+            busyNow ? h('span', { className: 'pd-spin pd-update-busy', title: t('rowUpdating') }) : null,
           );
+        };
 
         const installPanel = h(
           'div',
@@ -2828,9 +2881,11 @@ function updatePageState(updates, checking) {
                   h(
                     'span',
                     null,
-                    job.stage === 'rollback'
-                      ? t('jobRollingBack')
-                      : t('jobRunning', { n: String(Array.isArray(job.names) ? job.names.length : 0) }),
+                    t('jobRunning', { n: String(Array.isArray(job.names) ? job.names.length : 0) }) +
+                      (jobPhaseKey(job.phase) === null ? '' : ' · ' + t(jobPhaseKey(job.phase))) +
+                      (typeof job.startedAt === 'string' && Number.isFinite(Date.parse(job.startedAt))
+                        ? ' · ' + Math.max(0, Math.round((Date.now() - Date.parse(job.startedAt)) / 1000)) + 's'
+                        : ''),
                   ),
                   // 服务端判断这个任务此刻能不能取消。回滚阶段是唯一必须跑完的
                   // 一段，client 不能靠 job.running 自己猜——那样回滚时按钮还在，

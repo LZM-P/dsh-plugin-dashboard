@@ -7,6 +7,8 @@
 //
 // Run: node test/client.mjs
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { DICT, fill, translator, pickLocale } from '../src/client/i18n.js'
 import {
   failureOutcome,
@@ -16,6 +18,8 @@ import {
   renderUpdateReport,
   badgeOf,
   updatePageState,
+  updatableTotal,
+  jobPhaseKey,
 } from '../src/client/view.js'
 import { CSS } from '../src/client/style.js'
 
@@ -139,6 +143,36 @@ check(CSS.includes('.pd-row-failed'), 'the failed-row style exists')
 check(CSS.includes('.pd-dot-status'), 'the status dot style exists')
 check(CSS.includes('.pd-row-uninstall'), 'the uninstall control style exists')
 check(CSS.includes('.pd-src-warn'), 'the out-of-range tag style exists')
+check(CSS.includes('.pd-update-row-busy'), 'a row the host is updating has its own style')
+check(CSS.includes('.pd-update-busy'), 'the per-row spinner is styled')
+
+// ── the update badge counts both channels ────────────────────────────────────
+{
+  const npm = { rows: [{ name: 'a', hasUpdate: true }, { name: 'b', hasUpdate: false }, { name: 'c', hasUpdate: true }] }
+  const extras = { rows: [{ name: 'd', hasUpdate: true }, { name: 'e', hasUpdate: false }] }
+  eq(updatableTotal(npm, extras), 3, 'the badge adds npm and github/tarball updates together')
+  eq(updatableTotal(npm, null), 2, 'a failed extras request still counts the npm rows')
+  eq(updatableTotal(null, extras), 1, 'extras alone still produce a count')
+  eq(updatableTotal(null, null), 0, 'nothing loaded counts nothing')
+  eq(updatableTotal({ rows: [] }, { rows: [] }), 0, 'empty answers count nothing')
+  const panel = readFileSync(join('src', 'client', 'panel.js'), 'utf8')
+  check(panel.includes('updatableTotal(updates, extras)'), 'the badge uses the merged count, not updates.updates')
+}
+
+// ── the banner names the phase the host is in ───────────────────────────────
+{
+  eq(jobPhaseKey('start'), 'jobPhaseWait', 'waiting for idle sessions is named')
+  eq(jobPhaseKey('download'), 'jobPhaseDownload', 'downloading is named')
+  eq(jobPhaseKey('install'), 'jobPhaseInstall', 'installing is named')
+  eq(jobPhaseKey('rollback'), 'jobRollingBack', 'a rollback keeps its warning wording')
+  eq(jobPhaseKey(null), null, 'a settled job has no phase')
+  eq(jobPhaseKey(undefined), null, 'an unknown phase adds nothing')
+  for (const [locale, dict] of Object.entries(DICT)) {
+    for (const key of ['jobPhaseWait', 'jobPhaseDownload', 'jobPhaseInstall', 'rowUpdating']) {
+      check(typeof dict[key] === 'string' && dict[key].length > 0, locale + ' names ' + key)
+    }
+  }
+}
 
 // ── the generated file is in sync with its parts ─────────────────────────────
 const build = spawnSync(process.execPath, ['scripts/build-client.mjs', '--check'], { encoding: 'utf8' })

@@ -385,7 +385,15 @@ function jobStatus() {
   const running = activeJob !== null && activeJob.id === job.id
   // 回滚期间不接受取消：那是唯一一段「后台必须跑完」的工作。
   const cancelable = running && job.stage !== 'rollback'
-  return Object.assign({}, job, { running, cancelable, interrupted: !running && job.finishedAt === null })
+  return Object.assign({}, job, {
+    running,
+    cancelable,
+    // Which step the host is on right now. Without it the panel can only say
+    // "updating", which looks frozen during the (up to three minute) wait for
+    // every session to go idle.
+    phase: running ? activeJobStage : null,
+    interrupted: !running && job.finishedAt === null,
+  })
 }
 
 function emptyRoster() {

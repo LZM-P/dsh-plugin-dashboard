@@ -325,4 +325,37 @@ function updatePageState(updates, checking) {
   return { kind: 'list', updatable: updatable, outOfRange: outOfRange };
 }
 
+/**
+ * How many entries across both channels can be updated right now.
+ *
+ * The 更新 tab badge used to read the npm answer alone (`updates.updates`) while
+ * the 「全部更新」button counted the github / tarball rows too, so a panel with
+ * one github update showed "更新 7" next to "全部更新 (8)".
+ *
+ * @param {{rows?: Array<object>}|null} updates
+ * @param {{rows?: Array<object>}|null} extras
+ * @returns {number}
+ */
+export function updatableTotal(updates, extras) {
+  const countOf = (answer) => {
+    if (answer === null || typeof answer !== 'object' || !Array.isArray(answer.rows)) return 0;
+    return answer.rows.filter((row) => row !== null && typeof row === 'object' && row.hasUpdate === true).length;
+  };
+  return countOf(updates) + countOf(extras);
+}
+
+/**
+ * Which dictionary key describes the phase the host job is in.
+ *
+ * @param {string|null|undefined} phase
+ * @returns {string|null}
+ */
+export function jobPhaseKey(phase) {
+  if (phase === 'start') return 'jobPhaseWait';
+  if (phase === 'download') return 'jobPhaseDownload';
+  if (phase === 'install') return 'jobPhaseInstall';
+  if (phase === 'rollback') return 'jobRollingBack';
+  return null;
+}
+
 export { DEFAULT_TIMEOUT_MS, WRITE_TIMEOUT_MS, failureOutcome, sameEnabledMap, partitionTargets, mergeUpdateReport, renderUpdateReport, failureEntry, collectFailures, badgeOf, updatePageState }
