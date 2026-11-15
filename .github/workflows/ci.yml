@@ -51,9 +51,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/packed && cd /tmp/packed
-          tar -xzf "$GITHUB_WORKSPACE"/*.tgz
-          cd package
+          mkdir -p /tmp/packed
+          # A Windows path (D:\a\...) looks like "remote:path" to GNU tar, so
+          # extract from inside the workspace and give it a bare filename.
+          cd "$GITHUB_WORKSPACE"
+          tgz=$(ls -1 ./*.tgz | head -1)
+          tar -xzf "$tgz" -C /tmp/packed
+          cd /tmp/packed/package
           for f in index.js client.js lib/spec.js cordis.patch.yml icon.svg LICENSE README.md; do
             test -f "$f" || { echo "missing from tarball: $f"; exit 1; }
           done
