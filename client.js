@@ -517,26 +517,12 @@ window.__ModuleLoader__.load({
       const failed = list.filter((one) => one !== null && typeof one === 'object' && one.ok !== true);
       if (list.length === 1) {
         // 单通道时保留原始字段（log / hotSwap / restart 面板要靠它显示详情），
-        // 但必须把顶层的 name/message 规范化成 failed 数组 —— /updates 和
-        // /extras 抛错时返回的是 { ok:false, name, message }，没有 failed 字段，
-        // 渲染端就只能显示一句裸错误，连是哪个渠道挂了都看不出来。
+        // 但失败必须走 collectFailures 归一化 —— /updates 和 /extras 抛错时
+        // 返回的是 { ok:false, name, message }（可能还带一个 failed 对象），
+        // 渲染端只认数组。
         const only = list[0];
         if (only !== null && typeof only === 'object' && only.ok !== true) {
-          const name = typeof only.name === 'string' && only.name !== '' ? only.name : '';
-          const reason = only.message === undefined || only.message === null ? '' : String(only.message);
-          // failed 也可能是单个对象（/updates 原样返回的 {name, output}），
-          // 只认数组会把服务端回滚时那段 pnpm 输出整段丢掉。
-          const existing = Array.isArray(only.failed)
-            ? only.failed
-            : only.failed !== undefined && only.failed !== null && typeof only.failed === 'object'
-              ? [only.failed]
-              : [];
-          return Object.assign({}, only, {
-            failed: [
-              ...existing,
-              ...(name === '' && reason === '' ? [] : [{ name, output: reason }]),
-            ],
-          });
+          return Object.assign({}, only, { failed: collectFailures(only) });
         }
         return only;
       }
@@ -579,10 +565,10 @@ window.__ModuleLoader__.load({
       return {
         ok: failed.length === 0,
         updated,
-        failed: failed.map((one) => ({
-          name: typeof one.name === 'string' ? one.name : '',
-          output: String(one.message ?? one.output ?? ''),
-        })),
+        // 多通道也走 collectFailures：它会把每个渠道的 failed.output 展开出来，
+        // 而不只看顶层 message。之前这里手写了一遍，正好把服务端回滚时的
+        // pnpm 输出吞掉 —— 混了 github / file / tarball 的全选是这个按钮的主场景。
+        failed: failed.flatMap((one) => collectFailures(one)),
         restart,
         hotSwap,
         // 部分渠道换了、部分没换：界面上要说「部分需重启」，不能只说成功或失败。
@@ -655,6 +641,61 @@ window.__ModuleLoader__.load({
         ok: false,
         name: typeof base.name === 'string' && base.name !== '' ? base.name : fallbackName,
         message,
+      });
+    }
+
+    /**
+     * 从一个失败结果里取出所有该展示的详情行。
+     *
+     * 这是单/多通道都必须走同一条路的归一化点：服务端失败时会把回滚那段
+     * pnpm 输出放在 failed.output 里（failureEntry 会把它展开到顶层 failed
+     * 字段），而渠道自己还有一句短 message —— 两者都要保留。
+     *
+     * 之前单通道分支手写了一遍、多通道分支又手写了一遍，后者只看顶层
+     * message/output、不读 one.failed.output，于是「混了 github / file /
+     * tarball 的全选」这个主场景把 pnpm 输出吞掉了。抽出来共用，加渠道时
+     * 不会再漏一次。
+     *
+     * 返回 [{ name, output }]；数组和单个对象两种形态都吃，空值不产出假行。
+     */
+    function collectFailures(one) {
+      const lines = [];
+      if (one === null || one === undefined || typeof one !== 'object') return lines;
+      const push = (name, output) => {
+        const label = typeof name === 'string' && name !== '' ? name : '';
+        const text = output === undefined || output === null ? '' : String(output);
+        // 名字和原因都空的条目没有信息量，别在界面上占一行。
+        if (label === '' && text === '') return;
+        lines.push({ name: label, output: text });
+      };
+      // 先放服务端带回来的详情（它们更具体，通常带 pnpm 输出）。
+      const nested = one.failed;
+      if (Array.isArray(nested)) {
+        for (const item of nested) {
+          if (item === null || item === undefined || typeof item !== 'object') continue;
+          push(item.name, item.output ?? item.message);
+        }
+      } else if (nested !== null && nested !== undefined && typeof nested === 'object') {
+        push(nested.name, nested.output ?? nested.message);
+      }
+      // 再放这一层自己的短消息。名字缺失时用顶层 name 补上，否则用户只看到
+      // 一句无所指的「已回滚」。
+      const ownName = typeof one.name === 'string' && one.name !== '' ? one.name : '';
+      const ownMessage = one.message === undefined || one.message === null ? '' : String(one.message);
+      if (ownMessage !== '') {
+        // 嵌套详情已经用同样的文本占过位就不再重复。
+        const already = lines.some((line) => line.output === ownMessage);
+        if (!already) push(ownName, ownMessage);
+      } else if (ownName !== '' && lines.length === 0) {
+        push(ownName, '');
+      }
+      // 同一行被重复收集过就只留一条（嵌套详情和顶层消息常常是同一句话）。
+      const seen = new Set();
+      return lines.filter((line) => {
+        const key = line.name + '\u0000' + line.output;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
       });
     }
 

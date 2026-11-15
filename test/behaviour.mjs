@@ -199,7 +199,12 @@ console.log('one update button covers both channels')
   }
 
   const partitionTargets = new Function('return (' + loadClientFn('partitionTargets') + ')')()
-  const mergeUpdateReport = new Function('return (' + loadClientFn('mergeUpdateReport') + ')')()
+  // mergeUpdateReport 依赖 collectFailures（失败详情归一化），注入进去。
+  const collectFailures = new Function('return (' + loadClientFn('collectFailures') + ')')()
+  const mergeUpdateReport = new Function(
+    'collectFailures',
+    'return (' + loadClientFn('mergeUpdateReport') + ')',
+  )(collectFailures)
   const messageFor = (n, total) => n + ' of ' + total + ' failed'
 
   // ---- 分区 ----
@@ -330,8 +335,40 @@ console.log('one update button covers both channels')
   )
   check('a single-channel failed object is not dropped', Array.isArray(withDetail.failed))
   check(
-    'the server detail survives the merge',
+    'the server detail survives the single-channel merge',
     withDetail.failed.some((one) => String(one.output || '').includes('PNPM_STDOUT_DETAIL')),
+  )
+
+  // 多通道也必须带上同一份详情。上一版的 bug 就在这里：多通道分支只看顶层
+  // message，把 one.failed.output 吞了 —— 而「混了 github / file / tarball 的
+  // 全选」正是统一更新按钮的主场景。
+  const multiDetail = mergeUpdateReport(
+    [
+      { ok: false, failed: { name: '3 packages', output: 'PNPM_STDOUT_DETAIL' }, message: 'rolled back' },
+      { ok: true, name: 'file-pkg', to: '2.0.0' },
+    ],
+    messageFor,
+  )
+  check(
+    'the server detail survives the multi-channel merge',
+    multiDetail.failed.some((one) => String(one.output || '').includes('PNPM_STDOUT_DETAIL')),
+  )
+  check('both shapes report the same detail rows', multiDetail.failed.length === withDetail.failed.length)
+
+  // collectFailures 本身：两种形态、去重、空值不产假行。
+  check('an empty failure produces no rows', collectFailures({}).length === 0)
+  check('a null failure produces no rows', collectFailures(null).length === 0)
+  check(
+    'a failed array is flattened',
+    collectFailures({ failed: [{ name: 'a', output: 'x' }, { name: 'b', output: 'y' }] }).length === 2,
+  )
+  check(
+    'a failed object is accepted too',
+    collectFailures({ failed: { name: 'a', output: 'x' } }).length === 1,
+  )
+  check(
+    'the same message is not repeated twice',
+    collectFailures({ failed: { name: 'a', output: 'same' }, message: 'same' }).length === 1,
   )
 
   // ---- 结构约束 ----
