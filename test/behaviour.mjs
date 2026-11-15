@@ -571,6 +571,8 @@ console.log('switching a bundle layer back on')
   check('it goes through setBundleEnabled', source.includes('setBundleEnabled(name, body.enabled)'))
   check('it refuses to switch the panel off', source.includes('the dashboard refuses to switch itself off'))
   check('it shares the write mutex', source.includes('if (!beginMutation())') && source.includes('endMutation()'))
+  check('the panel snapshot carries the offline list', extract('snapshot').includes('offlineBundles(ctx)'))
+  check('the summary carries it too', extract('snapshot') !== null && source.includes('offline: await offlineBundles(ctx)'))
 }
 console.log('rollback is not cancellable')
 {

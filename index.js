@@ -1034,6 +1034,9 @@ async function snapshot(ctx) {
     ok: true,
     version: VERSION,
     rows,
+    // 面板读的是 /state，不是 /summary：关掉之后还能看到并重新打开的那些包
+    // 必须跟着这份快照走，否则「已关闭」区块永远拿不到数据。
+    offline: await offlineBundles(ctx),
     roster: state.auto.slice(),
     storage: storageMode,
     statePath: stateFile(),
