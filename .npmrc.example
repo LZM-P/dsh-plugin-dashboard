@@ -1,0 +1,10 @@
+# Copy to .npmrc only if you really need it, and never commit the result.
+#
+#   cp .npmrc.example .npmrc
+#   echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
+#
+# The scripted path is preferred: scripts/publish.mjs takes the token from the
+# environment and leaves no file behind. See README "发布".
+registry=https://registry.npmjs.org
+access=public
+//registry.npmjs.org/:_authToken=${NPM_TOKEN}

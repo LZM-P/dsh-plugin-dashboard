@@ -1,4 +1,4 @@
-# dsh-plugin-dashboard · 插件管理台
+# dsh-plugin-rack · 插件管理台
 
 DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个开关直接开关，更新完不用重启。**
 
@@ -37,6 +37,7 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 ### 更新
 
 - 「检查更新」把 profile 里按精确版本锁定的依赖逐个查 registry 最新版，有新的直接在列表行里标出来：`⬆ v0.1.29 ➡ v0.1.30 npm`，**点一下只更新那一个插件**。
+- **尊重你写的版本范围**：`package.json` 里锁死精确版本（`1.2.3`）时照旧只看那一个版本；写成 `^1.2.3` / `~1.2.3` / `>=1.2.3` 时，只有落在范围内的新版才算「可更新」。超出范围的新版会单独列在下方，标「超出声明范围」并附上你写的那段 spec —— 不会被批量更新悄悄顶到下一个大版本。
 - 更新由宿主执行：**点完就可以关掉面板**，pnpm 照样跑完。重新打开面板时，顶部会显示「后台更新中 · N 个插件」，跑完了补一条结果提示。不用守着这个界面，也不用去翻日志。卡住了可以点横幅右边的「取消」。
 - **会话正忙时也不白点**：需要下载的更新会先把附件取下来、核对 sha256，然后排队；宿主每 10 秒看一眼，等所有会话都空了就自己装上（下载过的东西不会重下）。排队期间横幅显示「已排队…」。
 - **网络不用你配**：下载按这个顺序自动选路，`config.json` 里明确指定的代理 → 环境变量（`HTTPS_PROXY` / `ALL_PROXY`，`NO_PROXY` 会照规矩跳过）→ 系统代理（Windows 的 Internet 设置）→ 直连；一条走不通就换下一条，不会因为代理没开就整个更新失败。HTTP 代理和 SOCKS5 都支持，带用户名密码也行，查 GitHub 接口的部分同样走这些代理。
@@ -48,7 +49,7 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 - 能识别 **GitHub 直装 / npm 镜像 tar 包 / 本地文件包 / 本地软链** 这四种装法，并在同一个列表里标出各自来源；本地软链没有「升级」这回事，不会被勾选。
 - registry 取 profile 自己的配置（`pluginManager.registries()`），不强行走 npmjs；装了 `GITHUB_TOKEN` 的话查 GitHub 版本会用它提额。
 
-### 安装与卸载
+## 安装与卸载
 
 - 输入包名先「检查」：**只做预检，什么都不动**。它会告诉你这是不是个 DSH 插件包、版本多少、干什么用的。像 `is-odd` 这种普通 npm 包会被拦下来，因为它没声明 `dsh.bundle`，装了也不会被加载。
 - 确认了再「安装」，走宿主官方的插件管理接口。
@@ -82,13 +83,13 @@ node test/self-check.mjs
 **① 从 GitHub 装（推荐，不依赖 npm）**
 
 ```bash
-dsh plugin add github:LZM-P/dsh-plugin-dashboard
+dsh plugin add github:LZM-P/dsh-plugin-rack
 ```
 
 **② 从 npm 装（发布后可用）**
 
 ```bash
-dsh plugin add dsh-plugin-dashboard
+dsh plugin add dsh-plugin-rack
 ```
 
 **③ 在插件管理界面里点「安装」**，把上面任意一条的 spec 填进去。
@@ -96,7 +97,7 @@ dsh plugin add dsh-plugin-dashboard
 装好后侧边栏会出现「插件管理」。
 
 > 如果宿主版本不认 `github:` 前缀，改用 tarball 地址：
-> `dsh plugin add https://github.com/LZM-P/dsh-plugin-dashboard/archive/refs/heads/main.tar.gz`
+> `dsh plugin add https://github.com/LZM-P/dsh-plugin-rack/archive/refs/heads/main.tar.gz`
 
 ## 数据放在哪
 
@@ -125,10 +126,15 @@ dsh plugin add dsh-plugin-dashboard
 | --- | --- |
 | `index.js` | 宿主端：注册 `/api/dsh-plugin-rack` 前缀路由，负责读取插件状态、批量操作、更新与安装卸载 |
 | `client.js` | 客户端：侧边栏图标 + `main` 面板的界面（无需构建步骤，浏览器直接加载） |
-| `cordis.patch.yml` | bundle 补丁，插入 `plugin-dashboard` 这一行 |
+| `lib/spec.js` | 版本范围算术（精确 / `^` / `~` / `>=` / 通配），纯函数，`index.js` 与测试共用同一份 |
+| `cordis.patch.yml` | bundle 补丁，插入 `plugin-rack` 这一行 |
 | `locale/{en,zh}.json` | 插件名与描述（插件管理页展示用） |
 | `icon.svg` | 插件图标 |
 | `test/self-check.mjs` | 自检脚本：词条对照、路由对照、hook 顺序、调试残留 |
+| `test/spec.mjs` | 范围算术单测：`^0.2.3` 不含 `0.3.0`、`~1.2.3` 不含 `1.3.0`、预发布版不穿越等边界 |
+| `test/*.mjs` | 行为 / 后台作业 / 下载 / pnpm 启动四套测试 |
+| `scripts/publish.mjs` | 发布脚本：token 只从 `NPM_TOKEN` 读，版本重复直接拒绝 |
+| `eslint.config.js` / `tsconfig.json` | lint 与 `tsc --checkJs`（类型只覆盖 `lib/`） |
 
 ## 接口
 
@@ -178,7 +184,7 @@ POST /api/dsh-plugin-rack/uninstall   { name }
 
 1. **网络暴露面**：API 只在 `127.0.0.1` / `localhost` / `::1` 上可达。宿主的 web server 本来就只绑 loopback，所以外网碰不到这个端口。
 2. **Host / Origin 校验**：每个请求都先过两道闸：Host 头必须指向 loopback，Origin 头（如果存在）也必须解析到 loopback。这挡的是同机浏览器里的恶意网页：它无法用 `<img>` 或 `fetch` 跨站调用你的 API（DNS rebinding / CSRF 都被这两道闸拦下）。
-2b. **写操作还要求"你确实是从面板来的"**：`POST` 除了要 `application/json`，还必须带 `Origin`、或 `Sec-Fetch-Site: same-origin`、或显式加上 `x-dsh-plugin-dashboard: 1` 请求头。
+2b. **写操作还要求"你确实是从面板来的"**：`POST` 除了要 `application/json`，还必须带 `Origin`、或 `Sec-Fetch-Site: same-origin`、或显式加上 `x-dsh-plugin-rack: 1` 请求头。
 
    这道门挡的是**无意的跨站 POST**（比如别处一个表单顺手打过来、或者某个页面被 XSS 后盲发请求），它对「完全不带 Origin」的请求本来是不设防的，而 `curl -X POST` 正好属于这一类。
 
@@ -186,7 +192,7 @@ POST /api/dsh-plugin-rack/uninstall   { name }
    ```bash
    curl -X POST http://127.0.0.1:9546/api/dsh-plugin-rack/bulk \
      -H 'content-type: application/json' \
-     -H 'x-dsh-plugin-dashboard: 1' \
+     -H 'x-dsh-plugin-rack: 1' \
      -d '{"enabled":false,"scope":"installed"}'
    ```
 3. **卸载白名单**：界面上的「卸载」按钮不是对所有行都显示。只有宿主 `pluginManager` 服务明确标记为 `removable` 的包才会出现按钮。核心组件、面板自己、harness 命脉都**永远不会**出现在可卸载列表里，所以误点卸载也不会把系统拆坏。
@@ -201,6 +207,19 @@ POST /api/dsh-plugin-rack/uninstall   { name }
 - DSH 的 Web 界面（`dsh.client.platform = web`）。
 - 需要宿主提供 `pluginManager` 服务；没有它会明确报错，而不是假装成功。
 - 热替换依赖宿主的 HMR 服务；拿不到时退回提示「重启一次生效」，**不会骗你说已经生效了**。
+
+## 开发
+
+```bash
+npm ci         # 只装 eslint + typescript（开发依赖，发布包不含 node_modules）
+npm test       # 六套：自检 / 行为 / 范围算术 / 后台作业 / 下载 / pnpm 启动
+npm run lint   # eslint（no-dupe-keys、no-undef 在这套配置下抓出过两处真 bug）
+npm run types  # tsc --checkJs，只覆盖 lib/（JSDoc 当类型，不引入构建步骤）
+```
+
+- 范围算术只有一份实现：`lib/spec.js`。`index.js` import 它，`test/spec.mjs` 直接跑它，所以「测试通过的是一套逻辑、线上跑的是另一套」不会发生。
+- CI 在 Windows 上跑 Node 20 与 22；另有一格把 `npm pack` 出来的 tarball 解压再跑一遍测试——`files` 里漏了哪个文件，本地是发现不了的。
+- 发布：`NPM_TOKEN=… npm run publish`。token 只从环境变量读，版本已存在会直接拒绝，不会落进任何文件。
 
 ## English
 

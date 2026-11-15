@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-rack",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "DSH 插件管理：所有插件一屏看完，一个开关直接开关，更新完自动热替换不用重启。/ Plugin rack for DSH: every plugin in one list with a power switch, an auto/manual flag that scopes the one-click bulk actions, and hot-swapped updates that need no restart.",
   "author": "Jaside (LZM-P)",
@@ -35,16 +35,19 @@
   "files": [
     "index.js",
     "client.js",
+    "lib/*.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "LICENSE",
-    "README.md",
-    "test/*.mjs"
+    "README.md"
   ],
   "scripts": {
-    "check": "node test/self-check.mjs && node test/behaviour.mjs",
-    "test": "node test/self-check.mjs && node test/behaviour.mjs && node test/job-background.mjs && node test/download.mjs && node test/pnpm-command.mjs"
+    "check": "node test/self-check.mjs && node test/behaviour.mjs && node test/spec.mjs",
+    "test": "node test/self-check.mjs && node test/behaviour.mjs && node test/spec.mjs && node test/job-background.mjs && node test/download.mjs && node test/pnpm-command.mjs",
+    "lint": "eslint .",
+    "types": "tsc -p tsconfig.json",
+    "publish": "node scripts/publish.mjs"
   },
   "dsh": {
     "manifestVersion": 1,
@@ -72,5 +75,9 @@
         "0.2.2-rc.3": "compatible"
       }
     }
+  },
+  "devDependencies": {
+    "eslint": "^9.15.0",
+    "typescript": "^5.6.3"
   }
 }

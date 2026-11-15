@@ -145,6 +145,8 @@ window.__ModuleLoader__.load({
         updateRestart: 'Restart DSH once to load the new versions',
         updatePartialSwap: 'Some packages are live, some need a restart',
         updateSwapped: 'New versions are live; refresh the page for client-side plugins',
+        updateOutOfRange: 'outside the declared range',
+        updateOutOfRangeHint: 'Newest {v} does not satisfy "{spec}" — not updated by default',
         hasNewVersion: 'Update available',
         updateNow: 'Update just this plugin',
         jobRunning: 'Host is updating in the background · {n} plugins',
@@ -199,8 +201,6 @@ window.__ModuleLoader__.load({
         groupAllAuto: '整组已设为自动',
         groupAllManual: '整组已设为手动',
         colName: '插件名称',
-        colPower: '开启 / 关闭',
-        colMode: '自动 / 手动',
         modeAuto: '自动',
         modeManual: '手动',
         filterAll: '全部',
@@ -305,6 +305,8 @@ window.__ModuleLoader__.load({
         updateRestart: '重启一次 DSH 让新版本生效',
         updatePartialSwap: '部分包已生效，部分需要重启',
         updateSwapped: '新版本已即时生效；界面类插件刷新页面即可',
+        updateOutOfRange: '超出声明范围',
+        updateOutOfRangeHint: '最新 {v} 不满足「{spec}」，默认不更新',
         hasNewVersion: '有新版',
         updateNow: '只更新这一个插件',
         jobRunning: '宿主正在后台更新 · {n} 个插件',
@@ -832,6 +834,14 @@ window.__ModuleLoader__.load({
       '.pd-upbtn-open{text-decoration:none}',
       '.pd-src{flex:none;font-size:10px;line-height:16px;padding:0 6px;border-radius:6px;white-space:nowrap;',
       'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary)}',
+      '.pd-src-warn{border-color:var(--dsw-alias-state-warn-primary);',
+      'color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary)}',
+      '.pd-up-section{margin-top:10px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
+      '.pd-up-oob{display:flex;flex-direction:column;gap:2px;margin-top:6px}',
+      '.pd-up-oob-row{display:flex;gap:8px;align-items:baseline;font-size:11px;line-height:18px;',
+      'color:var(--dsw-alias-label-tertiary)}',
+      '.pd-up-oob-row b{font-weight:600;color:var(--dsw-alias-label-secondary)}',
+      '.pd-up-oob-row code{font-size:10px;opacity:.85}',
       '.pd-upbtn{display:inline-flex;align-items:center;gap:5px;flex:none;font-family:inherit;',
       'font-size:11px;line-height:16px;padding:1px 7px;border-radius:8px;white-space:nowrap;',
       'font-variant-numeric:tabular-nums;cursor:pointer;',
@@ -929,6 +939,8 @@ window.__ModuleLoader__.load({
       '.pd-update-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-update-name{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.pd-update-ver{flex:none;font-size:12px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.pd-update-spec{flex:none;font-family:inherit;font-size:10px;line-height:16px;padding:0 5px;border-radius:5px;',
+      'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary)}',
       '.pd-check{flex:none;width:15px;height:15px;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}',
       '.pd-update-log{padding:10px 12px;border-radius:9px;font-size:12px;line-height:18px;background:var(--dsw-alias-bg-layer-2)}',
       '.pd-update-log-ok{border:1px solid var(--dsw-alias-state-success-primary)}',
@@ -1333,7 +1345,6 @@ window.__ModuleLoader__.load({
           setExtrasBusy('check');
           try {
             setExtras(await request('/extras'));
-            setExtraLog(null);
           } catch (error) {
             // 进面板那一次自动检查失败时静默，别一打开就弹错。
             if (quiet !== true) setExtras({ ok: false, message: String(error && error.message) });
@@ -1553,7 +1564,7 @@ window.__ModuleLoader__.load({
         const doBulk = async (ask) => {
           if (ask === null) return;
           setBulkAsk(null);
-          const { enabled, scope, total, save } = ask;
+          const { enabled, scope, save } = ask;
           let accepted;
           try {
             accepted = await request('/bulk', {
@@ -1856,7 +1867,24 @@ window.__ModuleLoader__.load({
             if (typeof item.name !== 'string') continue;
             srcOf.set(item.name, 'npm');
             if (item.hasUpdate === true && typeof item.latest === 'string') {
-              updateOf.set(item.name, { label: 'v' + item.latest, source: 'npm', action: 'npm' });
+              updateOf.set(item.name, {
+                label: 'v' + item.latest,
+                source: 'npm',
+                action: 'npm',
+                spec: typeof item.spec === 'string' ? item.spec : '',
+                ranged: item.kind !== 'exact',
+              });
+            } else if (item.outOfRange === true && typeof item.latest === 'string') {
+              // 服务端已经判定这个新版本不满足 package.json 里写的范围，
+              // 批量更新也不会动它。主列表仍然要让人看见「有新版但不升」，
+              // 否则用户只会觉得「检查更新坏了」。
+              updateOf.set(item.name, {
+                label: 'v' + item.latest,
+                source: 'npm',
+                action: 'npm',
+                outOfRange: true,
+                spec: typeof item.spec === 'string' ? item.spec : '',
+              });
             }
           }
         }
@@ -2034,6 +2062,18 @@ window.__ModuleLoader__.load({
                     return src === undefined || src === 'npm' ? null : h('span', { className: 'pd-src' }, src);
                   }
                   const updating = pending['update:' + row.entryId] === true;
+                  if (info.outOfRange === true) {
+                    // 有新版、但不在 package.json 声明的范围内：这里不能给按钮，
+                    // 点了也不会升，只会让人以为按钮失灵。
+                    return h(
+                      'span',
+                      {
+                        className: 'pd-src pd-src-warn',
+                        title: t('updateOutOfRangeHint', { v: info.label, spec: info.spec }),
+                      },
+                      t('updateOutOfRange'),
+                    );
+                  }
                   const parts = [
                     updating ? h('span', { key: 'spin', className: 'pd-spin pd-upbtn-spin' }) : null,
                     'v' + (row.version ?? '?'),
@@ -2404,6 +2444,9 @@ window.__ModuleLoader__.load({
             }),
             h('span', { className: 'pd-update-name' }, row.name),
             h('span', { className: 'pd-update-ver' }, row.current + ' → ' + row.latest),
+            typeof row.spec === 'string' && row.kind !== 'exact'
+              ? h('code', { className: 'pd-update-spec', title: row.spec }, row.spec)
+              : null,
           );
 
         const installPanel = h(
@@ -2540,6 +2583,32 @@ window.__ModuleLoader__.load({
               : updates.rows.filter((row) => row.hasUpdate).length === 0
                 ? h('div', { className: 'pd-empty' }, t('updateNone'))
                 : updates.rows.filter((row) => row.hasUpdate).map(updateRowNode),
+          (() => {
+            // 「有新版但超出范围」单独列一段：它不是错误，也不该被批量更新
+            // 静默吞掉，放在主列表下面说明原因最省解释成本。
+            const outOfRange = updates === null || !Array.isArray(updates.rows)
+              ? []
+              : updates.rows.filter((row) => row.outOfRange === true);
+            if (outOfRange.length === 0) return null;
+            return h(
+              'div',
+              { className: 'pd-up-section' },
+              h('div', null, t('updateOutOfRange') + ' (' + outOfRange.length + ')'),
+              h(
+                'div',
+                { className: 'pd-up-oob' },
+                outOfRange.map((row) =>
+                  h(
+                    'div',
+                    { key: row.name, className: 'pd-up-oob-row' },
+                    h('b', null, row.name),
+                    h('span', null, row.current + ' → ' + row.latest),
+                    typeof row.spec === 'string' ? h('code', null, row.spec) : null,
+                  ),
+                ),
+              ),
+            );
+          })(),
           updateLog === null
             ? null
             : h(

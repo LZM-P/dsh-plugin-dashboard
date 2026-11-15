@@ -32,7 +32,6 @@ function extract(name) {
   if (start === -1) throw new Error('function ' + name + ' not found in index.js')
   let depth = 0
   let index = source.indexOf('{', start)
-  const bodyStart = index
   for (; index < source.length; index += 1) {
     const ch = source[index]
     if (ch === '{') depth += 1
@@ -45,7 +44,6 @@ function extract(name) {
 }
 
 function load(name) {
-  // eslint-disable-next-line no-new-func
   return new Function('return (' + extract(name) + ')')()
 }
 

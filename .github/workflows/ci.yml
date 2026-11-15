@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Syntax
+        run: |
+          node --check index.js
+          node --check client.js
+          node --check lib/spec.js
+      - name: Tests
+        run: npm test
+      - name: Lint
+        run: npm run lint
+      - name: Types
+        run: npm run types
+
+  # A published package is the only artifact users ever see. Pack it and prove
+  # the tarball is loadable on its own: "files" dropping lib/ or locale/ is
+  # invisible to the source-tree tests above.
+  packaged:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm pack --silent
+      - name: Check the packed tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/packed && cd /tmp/packed
+          tar -xzf "$GITHUB_WORKSPACE"/*.tgz
+          cd package
+          for f in index.js client.js lib/spec.js cordis.patch.yml icon.svg LICENSE README.md; do
+            test -f "$f" || { echo "missing from tarball: $f"; exit 1; }
+          done
+          node --check index.js
+          node --check client.js
+          node -e "
+            const s = require('./lib/spec.js');
+            if (!s.satisfiesSpec('1.9.0', '^1.2.3')) throw new Error('caret broke');
+            if (s.satisfiesSpec('0.3.0', '^0.2.3')) throw new Error('0.x minor lock broke');
+            const p = require('./package.json');
+            if (!p.version) throw new Error('no version');
+            console.log('packed ' + p.name + '@' + p.version + ' loads');
+          "

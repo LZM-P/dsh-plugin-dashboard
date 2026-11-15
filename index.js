@@ -63,10 +63,14 @@ import { request as httpsRequest } from 'node:https'
 import { connect as netConnect } from 'node:net'
 import { connect as tlsConnect } from 'node:tls'
 import { createRequire } from 'node:module'
+import { EXACT_VERSION, compareVersions, isVersionSpec, parseSpec, satisfiesSpec } from './lib/spec.js'
 
 const ROUTE_PREFIX = '/api/dsh-plugin-rack'
 const require = createRequire(import.meta.url)
-const VERSION = '0.1.0'
+// Read from package.json instead of a literal: the panel reports this number to
+// the user and to the update checker, and a hand-maintained copy drifted from
+// the published version the first time it mattered.
+const VERSION = require('./package.json').version
 // The package was called dsh-plugin-dashboard before the public release. Keep
 // the old name recognised so a half-migrated install still treats the panel as
 // itself — otherwise "turn everything off" would switch off the very route
@@ -1501,8 +1505,6 @@ async function readJsonBody(req) {
 
 /** Packages the runtime itself provides; those are never fetched from npm. */
 const HOST_SCOPE = /^@deepseek-ai\//
-/** A version pinned exactly — the profile's own convention for dsh bundles. */
-const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 const REGISTRY_TIMEOUT = 12000
 const UPDATE_CONCURRENCY = 6
 
@@ -1520,44 +1522,6 @@ function profileFacts(ctx) {
   } catch {
     return null
   }
-}
-
-function versionParts(value) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/.exec(String(value).trim())
-  if (match === null) return null
-  return {
-    numbers: [Number(match[1]), Number(match[2]), Number(match[3])],
-    pre: match[4] === undefined ? null : match[4].split('.'),
-  }
-}
-
-/** Standard semver ordering; an unparsable side compares as equal. */
-function compareVersions(left, right) {
-  const a = versionParts(left)
-  const b = versionParts(right)
-  if (a === null || b === null) return 0
-  for (let index = 0; index < 3; index += 1) {
-    if (a.numbers[index] !== b.numbers[index]) return a.numbers[index] < b.numbers[index] ? -1 : 1
-  }
-  if (a.pre === null && b.pre === null) return 0
-  if (a.pre === null) return 1
-  if (b.pre === null) return -1
-  const length = Math.max(a.pre.length, b.pre.length)
-  for (let index = 0; index < length; index += 1) {
-    const x = a.pre[index]
-    const y = b.pre[index]
-    if (x === undefined) return -1
-    if (y === undefined) return 1
-    const xNumeric = /^\d+$/.test(x)
-    const yNumeric = /^\d+$/.test(y)
-    if (xNumeric && yNumeric) {
-      if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1
-      continue
-    }
-    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1
-    if (x !== y) return x < y ? -1 : 1
-  }
-  return 0
 }
 
 /**
@@ -1597,15 +1561,29 @@ async function npmLatest(name, base, signal) {
   throw new Error(errors.join('; '))
 }
 
-/** Dependencies this panel is willing to touch: not host-provided, pinned exactly. */
+/**
+ * Dependencies this panel is willing to touch: host-provided ones are skipped,
+ * and every spec it understands becomes a target.
+ *
+ * This used to accept exact pins only, which quietly meant that a profile using
+ * `^1.2.3` — the normal way to write a dependency — had those packages invisible
+ * to "update everything". The range still matters though: it is kept on the
+ * target so the checker can refuse a registry version the user's own range
+ * excludes, instead of silently jumping a major.
+ */
 function eligibleDeps(facts) {
   const out = []
   for (const [name, spec] of Object.entries(facts.deps)) {
     if (HOST_SCOPE.test(name)) continue
     if (typeof spec !== 'string') continue
-    const pinned = spec.trim()
-    if (!EXACT_VERSION.test(pinned)) continue
-    out.push({ name, current: pinned })
+    const parsed = parseSpec(spec)
+    if (parsed.kind === 'unsupported') continue
+    // What is actually installed beats the range floor: with `^1.2.3` installed
+    // at 1.9.0, comparing against the floor would report an update to 1.9.0.
+    const installed = installedVersion(facts.dir, name)
+    const current = installed !== null ? installed : parsed.floor
+    if (current === null) continue
+    out.push({ name, current, spec: spec.trim(), kind: parsed.kind, floor: parsed.floor })
   }
   return out
 }
@@ -1625,11 +1603,18 @@ async function checkUpdates(ctx) {
       const target = targets[index]
       try {
         const latest = await npmLatest(target.name, base, activeJobAbort === null ? undefined : activeJobAbort.signal)
+        const ahead = compareVersions(latest, target.current) > 0
+        // An exact pin has no range to violate. Anything else does, and a
+        // major bump the user's own `^`/`~` excludes is not this panel's call.
+        const inRange = target.kind === 'exact' || satisfiesSpec(latest, target.spec)
         rows[index] = {
           name: target.name,
           current: target.current,
           latest,
-          hasUpdate: compareVersions(latest, target.current) > 0,
+          spec: target.spec,
+          kind: target.kind,
+          hasUpdate: ahead && inRange,
+          outOfRange: ahead && !inRange,
           error: null,
         }
       } catch (error) {
@@ -1637,7 +1622,10 @@ async function checkUpdates(ctx) {
           name: target.name,
           current: target.current,
           latest: null,
+          spec: target.spec,
+          kind: target.kind,
           hasUpdate: false,
+          outOfRange: false,
           error: error instanceof Error ? error.message : String(error),
         }
       }
@@ -2131,6 +2119,7 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
   if (targets.length === 0) return { ok: false, message: 'no eligible package to update' }
 
   const planned = []
+  const outOfRange = []
   const registryBase = await configuredRegistry(ctx)
   for (const target of targets) {
     // 每查一个都先看有没有被取消：registry 查询 + 代理重试是弱网下最长的一段，
@@ -2145,10 +2134,29 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
       }
     }
     if (compareVersions(latest, target.current) <= 0) continue
+    // The user's own range is a decision, not an obstacle: `^1.2.3` says 2.x is
+    // out of bounds, so installing it because the registry moved on would be
+    // this panel overriding them. Report it instead of applying it silently.
+    if (target.kind !== 'exact' && !satisfiesSpec(latest, target.spec)) {
+      outOfRange.push({ name: target.name, spec: target.spec, latest })
+      continue
+    }
     planned.push({ name: target.name, current: target.current, latest })
   }
   assertNotCancelled(job)
-  if (planned.length === 0) return { ok: true, updated: [], message: 'already current' }
+  if (planned.length === 0) {
+    if (outOfRange.length > 0) {
+      return {
+        ok: true,
+        updated: [],
+        outOfRange,
+        message: outOfRange
+          .map(one => `${one.name} ${one.latest} 超出了 package.json 写明的 ${one.spec}，没有安装`)
+          .join('；'),
+      }
+    }
+    return { ok: true, updated: [], message: 'already current' }
+  }
 
   // Everything pnpm may touch, kept for the rollback below.
   const backup = new Map()
@@ -2319,6 +2327,9 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
   return {
     ok: true,
     updated: planned.map(item => ({ name: item.name, from: item.current, to: item.latest })),
+    // Reported rather than swallowed: the user asked to update these, and the
+    // honest answer is "the range you wrote excludes the new version".
+    ...(outOfRange.length > 0 ? { outOfRange } : {}),
     hotSwap: swap,
     restart: swap.ok !== true,
     // 没有维护门时如实上报：用户有权知道这次是在会话可能正跑着的时候改了 node_modules。
@@ -2893,9 +2904,6 @@ async function pipeTo(part, response, signal, offset, deadline) {
   stream.on('error', error => {
     if (failure === null) failure = error
   })
-  const fail = error => {
-    if (failure === null) failure = error
-  }
 
   let idle = null
   const arm = () => {
@@ -3112,7 +3120,9 @@ async function listExtras(ctx) {
   for (const [name, raw] of Object.entries(facts.deps)) {
     if (HOST_SCOPE.test(name)) continue
     const spec = typeof raw === 'string' ? raw.trim() : ''
-    if (EXACT_VERSION.test(spec)) continue
+    // Everything the version updater understands is not an "other install kind":
+    // ranges used to land here as `other` rows that offered no action at all.
+    if (isVersionSpec(spec)) continue
     const current = installedVersion(facts.dir, name)
     if (spec.startsWith('link:')) {
       rows.push({ name, kind: 'link', spec, current, note: '本地软链' })
