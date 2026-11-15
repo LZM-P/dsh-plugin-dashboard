@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-rack",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "DSH 插件管理：所有插件一屏看完，一个开关直接开关，更新完自动热替换不用重启。/ Plugin rack for DSH: every plugin in one list with a power switch, an auto/manual flag that scopes the one-click bulk actions, and hot-swapped updates that need no restart.",
   "author": "Jaside (LZM-P)",
@@ -61,14 +61,15 @@
       ]
     },
     "engines": {
-      "dsh": ">=0.2.1-rc.2 <0.4.0-0"
+      "dsh": ">=0.2.1-rc.2 <0.2.3-0"
     },
     "compatibility": {
       "dshReleases": {
         "0.2.1-rc.2": "compatible",
         "0.2.1-rc.5": "compatible",
         "0.2.2-rc.1": "compatible",
-        "0.2.2-rc.2": "compatible"
+        "0.2.2-rc.2": "compatible",
+        "0.2.2-rc.3": "compatible"
       }
     }
   }
