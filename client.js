@@ -143,6 +143,7 @@ window.__ModuleLoader__.load({
         updateWait: 'A session is still running; try again once it is idle',
         updateDone: 'Updated',
         updateRestart: 'Restart DSH once to load the new versions',
+        updatePartialSwap: 'Some packages are live, some need a restart',
         updateSwapped: 'New versions are live; refresh the page for client-side plugins',
         hasNewVersion: 'Update available',
         updateNow: 'Update just this plugin',
@@ -302,6 +303,7 @@ window.__ModuleLoader__.load({
         updateWait: '有会话正在运行，等它结束后再试',
         updateDone: '已更新',
         updateRestart: '重启一次 DSH 让新版本生效',
+        updatePartialSwap: '部分包已生效，部分需要重启',
         updateSwapped: '新版本已即时生效；界面类插件刷新页面即可',
         hasNewVersion: '有新版',
         updateNow: '只更新这一个插件',
@@ -452,8 +454,16 @@ window.__ModuleLoader__.load({
         void error;
         data = null;
       }
-      if (!response.ok) throw new Error((data && data.message) || response.status + ' ' + response.statusText);
-      if (data === null || data.ok !== true) throw new Error((data && data.message) || 'malformed response');
+      // 服务端失败时常常带着细节（回滚那段 pnpm 输出在 data.failed.output 里），
+      // 之前只取 message 就抛，于是「为什么失败」的信息到不了界面。把整个 data
+      // 挂到 error 上，调用方要用就有。
+      if (!response.ok || data === null || data.ok !== true) {
+        const message =
+          (data && data.message) || (response.ok ? 'malformed response' : response.status + ' ' + response.statusText);
+        const error = new Error(message);
+        if (data !== null && typeof data === 'object') error.data = data;
+        throw error;
+      }
       return data;
     }
 
@@ -514,9 +524,16 @@ window.__ModuleLoader__.load({
         if (only !== null && typeof only === 'object' && only.ok !== true) {
           const name = typeof only.name === 'string' && only.name !== '' ? only.name : '';
           const reason = only.message === undefined || only.message === null ? '' : String(only.message);
+          // failed 也可能是单个对象（/updates 原样返回的 {name, output}），
+          // 只认数组会把服务端回滚时那段 pnpm 输出整段丢掉。
+          const existing = Array.isArray(only.failed)
+            ? only.failed
+            : only.failed !== undefined && only.failed !== null && typeof only.failed === 'object'
+              ? [only.failed]
+              : [];
           return Object.assign({}, only, {
             failed: [
-              ...(Array.isArray(only.failed) ? only.failed : []),
+              ...existing,
               ...(name === '' && reason === '' ? [] : [{ name, output: reason }]),
             ],
           });
@@ -539,18 +556,23 @@ window.__ModuleLoader__.load({
       // 只要有一个渠道真的热替换成功，代码就是活的，不该再要求重启。
       // 之前 restart 取 `some(one => one.restart === true)`、hotSwap 取最后一条，
       // 于是「npm 渠道热替换成功 + extras 渠道没跑热替换」会被报成"需重启"。
-      const swapped = list.some(
-        (one) => one !== null && typeof one === 'object' && one.hotSwap !== undefined && one.hotSwap !== null && one.hotSwap.ok === true,
-      );
-      const reportedRestart = list.some((one) => one !== null && typeof one === 'object' && one.restart === true);
-      const restart = swapped ? false : reportedRestart;
-      const hotSwapCandidates = list
+      // hotSwap 是「整批的代码换没换干净」，不能拿某一个渠道的结果代表全部。
+      // 各渠道管的是不同的包：npm 那条热替换成功，不代表 extras 那个包的变更
+      // 也生效了。界面只看 hotSwap.ok 决定显示「已热替换」还是「需重启」
+      // （restart 字段没有任何渲染消费点），所以这里必须是合取：
+      // 只有每一个真的做过热替换的渠道都成功，才算整批成功。
+      const swapAttempts = list
         .map((one) => (one !== null && typeof one === 'object' ? one.hotSwap : undefined))
         .filter((one) => one !== undefined && one !== null);
-      // 优先展示那个成功的那条，否则给最后一条（它带着失败原因）。
+      const anySwapFailed = swapAttempts.some((one) => one.ok !== true);
+      const allSwapOk = swapAttempts.length > 0 && !anySwapFailed;
+      // 任何一个渠道说「要重启」，就得提示重启：那是它自己管的包没换进去。
+      const restart =
+        list.some((one) => one !== null && typeof one === 'object' && one.restart === true) || anySwapFailed;
+      // 失败原因优先展示（它带 reason），否则第一个成功的。
       const hotSwap =
-        hotSwapCandidates.find((one) => one.ok === true) ??
-        (hotSwapCandidates.length > 0 ? hotSwapCandidates[hotSwapCandidates.length - 1] : undefined);
+        swapAttempts.find((one) => one.ok !== true) ??
+        (swapAttempts.length > 0 ? swapAttempts[0] : undefined);
       const log = list
         .map((one) => (one !== null && typeof one === 'object' ? one.log : undefined))
         .filter((one) => typeof one === 'string');
@@ -563,6 +585,8 @@ window.__ModuleLoader__.load({
         })),
         restart,
         hotSwap,
+        // 部分渠道换了、部分没换：界面上要说「部分需重启」，不能只说成功或失败。
+        partialSwap: swapAttempts.length > 1 && allSwapOk === false && swapAttempts.some((one) => one.ok === true),
         log: log.length > 0 ? log[log.length - 1] : undefined,
         message:
           failed.length === 0
@@ -611,6 +635,27 @@ window.__ModuleLoader__.load({
         failedLines.push(name + ': ' + output.slice(-600));
       }
       return { updated: shown, failed: failedLines };
+    }
+
+    /**
+     * 把一个抛出的失败包装成报告条目。
+     *
+     * request() 现在把整个响应体挂在 error.data 上，因为服务端失败时常常带着
+     * 细节 —— 回滚那段 pnpm 输出就放在 data.failed.output 里。之前只留 message，
+     * 于是「为什么失败」永远到不了界面。
+     */
+    function failureEntry(error, fallbackName) {
+      const detail =
+        error !== null && typeof error === 'object' && error.data !== undefined && error.data !== null
+          ? error.data
+          : null;
+      const base = detail !== null && typeof detail === 'object' ? detail : {};
+      const message = error !== null && typeof error === 'object' && typeof error.message === 'string' ? error.message : String(error);
+      return Object.assign({}, base, {
+        ok: false,
+        name: typeof base.name === 'string' && base.name !== '' ? base.name : fallbackName,
+        message,
+      });
     }
 
     const CSS = [
@@ -1184,7 +1229,7 @@ window.__ModuleLoader__.load({
                 // maintenance hold, so this can legitimately outlive the default budget.
                 results.push(await request('/updates', { names: plan.npm }, { timeoutMs: WRITE_TIMEOUT_MS }));
               } catch (error) {
-                results.push({ ok: false, name: plan.npm.join(', '), message: String(error && error.message) });
+                results.push(failureEntry(error, plan.npm.join(', ')));
               }
             }
             for (const item of plan.extras) {
@@ -1196,7 +1241,7 @@ window.__ModuleLoader__.load({
                 );
                 results.push({ name: item.name, ...next });
               } catch (error) {
-                results.push({ ok: false, name: item.name, message: String(error && error.message) });
+                results.push(failureEntry(error, item.name));
               }
             }
             const merged = mergeUpdateReport(results, (n, total) => t('updatePartial', { n, total }));
@@ -2481,9 +2526,13 @@ window.__ModuleLoader__.load({
                     null,
                     ' · ' +
                       (updateLog.ok === true
-                        ? updateLog.hotSwap && updateLog.hotSwap.ok === true
-                          ? t('updateSwapped')
-                          : t('updateRestart')
+                        ? updateLog.partialSwap === true
+                          ? // 一部分渠道换进去了、一部分没有：既不能说"已热替换"，
+                            // 也不能说全都要重启。
+                            t('updatePartialSwap')
+                          : updateLog.hotSwap && updateLog.hotSwap.ok === true
+                            ? t('updateSwapped')
+                            : t('updateRestart')
                         : updateLog.waiting === true
                           ? t('updateWait')
                           : String(updateLog.message || '')),

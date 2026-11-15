@@ -284,23 +284,55 @@ console.log('one update button covers both channels')
   const singleOk = mergeUpdateReport([{ ok: true, log: '/tmp/x', hotSwap: { ok: true } }], messageFor)
   check('a single success passes through untouched', singleOk.log === '/tmp/x' && singleOk.hotSwap.ok === true)
 
-  // 混合更新里只要有一个渠道热替换成功，就不该再要求重启。
+  // 混合更新里一个渠道换了、另一个没换：不能报"已热替换"。
+  // 各渠道管不同的包，npm 换进去了不代表 extras 那个也生效。
+  // 界面只看 hotSwap.ok，所以它必须是合取，而不是挑成功的那条。
   const mixedSwap = mergeUpdateReport(
     [
       { ok: true, hotSwap: { ok: true }, restart: false },
-      { ok: true, name: 'x', to: '2.0.0', restart: true },
+      { ok: true, name: 'x', to: '2.0.0', hotSwap: { ok: false, reason: 'busy' }, restart: true },
     ],
     messageFor,
   )
-  check('a successful hot swap anywhere suppresses the restart advice', mixedSwap.restart === false)
-  const noSwap = mergeUpdateReport(
+  check('a partial swap does not claim success', mixedSwap.hotSwap.ok !== true)
+  check('a partial swap is flagged', mixedSwap.partialSwap === true)
+  check('a partial swap asks for a restart', mixedSwap.restart === true)
+  check(
+    'the reported swap reason is the failed one',
+    mixedSwap.hotSwap.reason === 'busy',
+  )
+
+  const allSwapped = mergeUpdateReport(
     [
-      { ok: true, hotSwap: { ok: false, reason: 'busy' }, restart: true },
-      { ok: true, name: 'x', to: '2.0.0', restart: true },
+      { ok: true, hotSwap: { ok: true }, restart: false },
+      { ok: true, name: 'x', to: '2.0.0', hotSwap: { ok: true }, restart: false },
     ],
     messageFor,
   )
-  check('without any successful swap the restart advice stays', noSwap.restart === true)
+  check('every channel swapping means no restart', allSwapped.restart === false)
+  check('every channel swapping is not partial', allSwapped.partialSwap === false)
+
+  check(
+    'no channel swapping keeps the restart advice',
+    mergeUpdateReport(
+      [
+        { ok: true, hotSwap: { ok: false, reason: 'busy' }, restart: true },
+        { ok: true, name: 'x', to: '2.0.0', restart: true },
+      ],
+      messageFor,
+    ).restart === true,
+  )
+
+  // 单渠道失败时，服务端带回来的 failed 对象（含 pnpm 输出）不能丢。
+  const withDetail = mergeUpdateReport(
+    [{ ok: false, failed: { name: '3 packages', output: 'PNPM_STDOUT_DETAIL' }, message: 'rolled back' }],
+    messageFor,
+  )
+  check('a single-channel failed object is not dropped', Array.isArray(withDetail.failed))
+  check(
+    'the server detail survives the merge',
+    withDetail.failed.some((one) => String(one.output || '').includes('PNPM_STDOUT_DETAIL')),
+  )
 
   // ---- 结构约束 ----
   check(
@@ -311,7 +343,7 @@ console.log('one update button covers both channels')
     'the npm channel is wrapped too',
     /try \{\s*\n\s*\/\/ A registry download[\s\S]{0,300}?catch \(error\)/.test(client),
   )
-  check('a thrown channel is collected, not rethrown', client.includes('results.push({ ok: false, name: item.name, message:'))
+  check('a thrown channel is collected, not rethrown', client.includes('results.push(failureEntry(error'))
   check('the panel keeps the report when a channel failed', client.includes('if (merged.ok === true) {'))
 }
 
