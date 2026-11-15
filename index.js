@@ -25,8 +25,7 @@
  *   POST /api/dsh-plugin-rack/bundle      { name, enabled }  compose or drop a bundle layer
  *   POST /api/dsh-plugin-rack/bulk        { enabled, scope?, save?, cancel? }
  *   POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
- *   GET  /api/dsh-plugin-rack/summary     read-only rows for future agent tools, plus the
- *                                         installed-but-not-composed bundles (`offline`)
+ *   GET  /api/dsh-plugin-rack/summary     read-only rows for scripts and future agent tools
  *   GET  /api/dsh-plugin-rack/job         the install running now, or the last one that finished
  *   POST /api/dsh-plugin-rack/job         { action: 'cancel' }  stop the run that is executing now
  *
@@ -989,6 +988,7 @@ function toRow(entry, base) {
     official: moduleName.startsWith('@deepseek-ai/'),
     manageable: patchId !== null,
     self: isSelfRow(moduleName, patchId),
+    composed: true,
   }
 }
 
@@ -1009,7 +1009,30 @@ async function readRows(ctx) {
     moduleName: typeof entry.moduleName === 'string' ? entry.moduleName : '',
   }))
   const base = profileDir(named)
-  return entries.map(entry => toRow(entry, base))
+  const rows = entries.map(entry => toRow(entry, base))
+  // 关掉（未装配）的包在加载器里没有条目，但用户仍然要能看见它、开关它、
+  // 让它跟一键批量和自动清单一起走。把它们合成成行，用 composed:false 标记：
+  // 开关这样的行走装配层（setBundleEnabled），而不是 loader 的 entry 开关。
+  for (const bundle of await offlineBundles(ctx)) {
+    if (rows.some(row => row.moduleName === bundle.name)) continue
+    rows.push({
+      entryId: 'bundle:' + bundle.name,
+      patchId: bundle.name,
+      moduleName: bundle.name,
+      name: bundle.name,
+      version: bundle.version,
+      description: bundle.description,
+      enabled: false,
+      phase: null,
+      readOnlyReason: null,
+      diagnostic: null,
+      official: bundle.official === true,
+      manageable: true,
+      self: false,
+      composed: false,
+    })
+  }
+  return rows
 }
 
 async function snapshot(ctx) {
@@ -1034,9 +1057,7 @@ async function snapshot(ctx) {
     ok: true,
     version: VERSION,
     rows,
-    // 面板读的是 /state，不是 /summary：关掉之后还能看到并重新打开的那些包
-    // 必须跟着这份快照走，否则「已关闭」区块永远拿不到数据。
-    offline: await offlineBundles(ctx),
+
     roster: state.auto.slice(),
     storage: storageMode,
     statePath: stateFile(),
@@ -1071,7 +1092,15 @@ async function setOne(ctx, entryId, enabled, known) {
 
   let result
   try {
-    result = await ctx.pluginManager.setPluginEnabled(row.entryId, enabled)
+    if (row.composed === false) {
+      // 未装配的行没有 loader 条目可开关：装配清单才是它的开关。
+      if (typeof ctx.pluginManager.setBundleEnabled !== 'function') {
+        return { entryId, ok: false, message: 'this host cannot switch a bundle layer' }
+      }
+      result = await ctx.pluginManager.setBundleEnabled(row.name, enabled)
+    } else {
+      result = await ctx.pluginManager.setPluginEnabled(row.entryId, enabled)
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return { entryId, ok: false, message }
@@ -1209,6 +1238,40 @@ async function patchContext(ctx) {
  * `row.enabled` would treat an already-saved toggle as "nothing to do" and drop
  * the entry it should restore.
  */
+/**
+ * 装配清单层面的开关：只写 package.json 的 dsh.profile.bundles，不重载。
+ *
+ * `save` 模式的批量操作要能把未装配的包一起写进去，而它们没有 loader 条目、
+ * 也就没有可以写 disabled 覆盖的 patch id；装配清单才是它们的持久状态。
+ */
+async function composeBundles(ctx, names, enabled) {
+  if (!Array.isArray(names) || names.length === 0) return { changed: 0, unchanged: 0 }
+  const facts = profileFacts(ctx)
+  if (facts === null) return { changed: 0, unchanged: names.length }
+  const file = join(facts.dir, 'package.json')
+  const parsed = JSON.parse(readFileSync(file, 'utf8'))
+  parsed.dsh = parsed.dsh === undefined || parsed.dsh === null ? {} : parsed.dsh
+  parsed.dsh.profile = parsed.dsh.profile === undefined || parsed.dsh.profile === null ? {} : parsed.dsh.profile
+  const current = Array.isArray(parsed.dsh.profile.bundles) ? parsed.dsh.profile.bundles : []
+  let next = current.slice()
+  let changed = 0
+  let unchanged = 0
+  for (const name of names) {
+    const has = next.includes(name)
+    if (has === enabled) {
+      unchanged += 1
+      continue
+    }
+    next = enabled === true ? next.concat([name]) : next.filter(one => one !== name)
+    changed += 1
+  }
+  if (changed > 0) {
+    parsed.dsh.profile.bundles = next
+    writeFileSync(file, JSON.stringify(parsed, null, 2) + '\n', 'utf8')
+  }
+  return { changed, unchanged }
+}
+
 async function writeEnabledBatch(ctx, rows, enabled) {
   const { profile, yaml } = await patchContext(ctx)
   const { parseDocument } = yaml
@@ -1431,12 +1494,15 @@ async function actBulk(ctx, enabled, scope, mode) {
   // "stop everything, update it, restart" workflow, which restarts anyway.
   if (mode === 'save') {
     try {
-      const written = await writeEnabledBatch(ctx, targets, enabled)
+      const composedRows = targets.filter(row => row.composed !== false)
+      const offlineNames = targets.filter(row => row.composed === false).map(row => row.name)
+      const written = await writeEnabledBatch(ctx, composedRows, enabled)
+      const composed = await composeBundles(ctx, offlineNames, enabled)
       return {
         ok: true,
         saved: true,
-        total: written.changed.length,
-        unchanged: unchanged + written.unchanged,
+        total: written.changed.length + composed.changed,
+        unchanged: unchanged + written.unchanged + composed.unchanged,
         guarded: guards.length,
         patchPath: written.patchPath,
         bulk: null,
@@ -4196,8 +4262,7 @@ async function handle(ctx, req, res) {
     const auto = new Set(state.auto)
     return send(res, 200, {
       ok: true,
-      // 装配层里已安装但没被 compose 的包：关掉之后它们才还能被重新打开。
-      offline: await offlineBundles(ctx),
+
       rows: rows.map(row => ({
         name: row.name,
         version: row.version,

@@ -160,8 +160,7 @@
         const [expanded, setExpanded] = React.useState({});
         const [details, setDetails] = React.useState({});
         const [updates, setUpdates] = React.useState(null);
-        // 装配层里已安装但没被 compose 的包：关掉之后它们才还能被重新打开。
-        const [offlineBusy, setOfflineBusy] = React.useState('');
+
         const [updatesBusy, setUpdatesBusy] = React.useState('');
         const [picked, setPicked] = React.useState({});
         const [updateLog, setUpdateLog] = React.useState(null);
@@ -1037,6 +1036,7 @@
           const desc = row.description || (pkg === null ? null : pkg.description);
           const tags = [];
           if (row.self) tags.push(h('span', { key: 'self', className: 'pd-tag' }, t('selfTag')));
+          if (row.composed === false) tags.push(h('span', { key: 'offline', className: 'pd-tag pd-tag-warn' }, t('offlineTag')));
           if (locked) {
             tags.push(
               h(
@@ -1208,7 +1208,7 @@
                 {
                   className: 'pd-cell pd-cell-power',
                   onClick: (event) => event.stopPropagation(),
-                  title: selfLocked ? t('selfLocked') : undefined,
+                  title: selfLocked ? t('selfLocked') : row.composed === false ? t('offlineHint') : undefined,
                 },
                 h(PowerSwitch, {
                   checked: row.enabled,
@@ -1563,58 +1563,6 @@
           );
         };
 
-        // 「关掉之后就查不到」是装配模型的必然结果：没被 compose 就没有 loader 条目。
-        // 这些行来自 listBundles()，只读装配层自己，不经过加载器。
-        const offline = Array.isArray(data.offline) ? data.offline : [];
-        const enableOffline = async (name) => {
-          setOfflineBusy(name);
-          try {
-            const answer = await request('/bundle', { name, enabled: true });
-            const stale =
-              answer && answer.result && answer.result.application !== 'applied'
-                ? ' · ' + t('offlineStale')
-                : '';
-            setToast({ kind: 'ok', text: t('offlineEnable') + ' ' + name + stale });
-            load();
-          } catch (error) {
-            setToast({ kind: 'warn', text: error instanceof Error ? error.message : String(error) });
-          } finally {
-            setOfflineBusy('');
-          }
-        };
-        const offlineNode =
-          tab === 'updates' || offline.length === 0
-            ? null
-            : h(
-                'div',
-                { className: 'pd-offline' },
-                h(
-                  'div',
-                  { className: 'pd-offline-head' },
-                  h('span', { className: 'pd-offline-title' }, t('offlineTitle', { n: String(offline.length) })),
-                  h('span', { className: 'pd-offline-hint' }, t('offlineHint')),
-                ),
-                offline.map((bundle) =>
-                  h(
-                    'div',
-                    { key: bundle.name, className: 'pd-offline-row' },
-                    h('span', { className: 'pd-offline-name' }, bundle.name),
-                    typeof bundle.version === 'string'
-                      ? h('span', { className: 'pd-offline-ver' }, 'v' + bundle.version)
-                      : null,
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'pd-btn pd-btn-sm',
-                        disabled: offlineBusy !== '',
-                        onClick: () => enableOffline(bundle.name),
-                      },
-                      offlineBusy === bundle.name ? t('loading') : t('offlineEnable'),
-                    ),
-                  ),
-                ),
-              );
         const installPanel = h(
           'div',
           { className: 'pd-updates' },
@@ -2055,14 +2003,9 @@
             : null,
           tab === 'updates'
             ? h('div', null, installPanel, updatePanel)
-            : h(
-                'div',
-                null,
-                groups.length === 0
-                  ? h('div', { className: 'pd-empty' }, t('empty'))
-                  : groups.map(groupNode),
-                offlineNode,
-              ),
+            : groups.length === 0
+              ? h('div', { className: 'pd-empty' }, t('empty'))
+              : groups.map(groupNode),
           h(
             'div',
             { className: 'pd-foot' },

@@ -145,10 +145,8 @@ window.__ModuleLoader__.load({
         jobRunning: 'Host is updating in the background · {n} plugins',
         jobRollingBack: 'Rolling back — this cannot be cancelled',
         jobPhaseWait: 'waiting for sessions to go idle',
-        offlineTitle: 'Switched off ({n})',
-        offlineHint: 'Installed, but the profile is not composing them. Switch one on to load it again.',
-        offlineEnable: 'Switch on',
-        offlineStale: 'takes effect after a restart',
+        offlineTag: 'switched off',
+        offlineHint: 'installed, but not composed — switching it on loads it again',
         jobPhaseDownload: 'downloading',
         jobPhaseInstall: 'installing',
         rowUpdating: 'updating',
@@ -313,10 +311,8 @@ window.__ModuleLoader__.load({
         jobRunning: '宿主正在后台更新 · {n} 个插件',
         jobRollingBack: '正在回滚，这一步不能取消',
         jobPhaseWait: '等待会话空闲',
-        offlineTitle: '已关闭（{n}）',
-        offlineHint: '这些包还在 profile 里，只是没被装配；打开就会重新加载。',
-        offlineEnable: '重新启用',
-        offlineStale: '需要重启后生效',
+        offlineTag: '已关闭',
+        offlineHint: '已安装但没有装配；打开开关就会重新加载',
         jobPhaseDownload: '正在下载',
         jobPhaseInstall: '正在安装',
         rowUpdating: '更新中',
@@ -975,14 +971,7 @@ function jobPhaseKey(phase) {
       '.pd-update-row-done{opacity:.55;cursor:default}',
       '.pd-update-row-busy{background:var(--dsw-alias-interactive-bg-hover);cursor:default}',
       '.pd-update-busy{margin-left:auto;flex:none;border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
-      '.pd-offline{margin-top:14px;border:1px dashed var(--dsw-alias-border-l3);border-radius:12px;padding:10px 12px}',
-      '.pd-offline-head{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline;margin-bottom:8px}',
-      '.pd-offline-title{font-weight:600}',
-      '.pd-offline-hint{font-size:12px;color:var(--dsw-alias-label-secondary)}',
-      '.pd-offline-row{display:flex;align-items:center;gap:10px;padding:6px 4px}',
-      '.pd-offline-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.pd-offline-ver{font-size:12px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
-      '.pd-update-row-done:hover{opacity:.8}',
+                                                '.pd-update-row-done:hover{opacity:.8}',
       '.pd-update-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-update-name{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.pd-update-ver{flex:none;font-size:12px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
@@ -1159,8 +1148,7 @@ function jobPhaseKey(phase) {
         const [expanded, setExpanded] = React.useState({});
         const [details, setDetails] = React.useState({});
         const [updates, setUpdates] = React.useState(null);
-        // 装配层里已安装但没被 compose 的包：关掉之后它们才还能被重新打开。
-        const [offlineBusy, setOfflineBusy] = React.useState('');
+
         const [updatesBusy, setUpdatesBusy] = React.useState('');
         const [picked, setPicked] = React.useState({});
         const [updateLog, setUpdateLog] = React.useState(null);
@@ -2036,6 +2024,7 @@ function jobPhaseKey(phase) {
           const desc = row.description || (pkg === null ? null : pkg.description);
           const tags = [];
           if (row.self) tags.push(h('span', { key: 'self', className: 'pd-tag' }, t('selfTag')));
+          if (row.composed === false) tags.push(h('span', { key: 'offline', className: 'pd-tag pd-tag-warn' }, t('offlineTag')));
           if (locked) {
             tags.push(
               h(
@@ -2207,7 +2196,7 @@ function jobPhaseKey(phase) {
                 {
                   className: 'pd-cell pd-cell-power',
                   onClick: (event) => event.stopPropagation(),
-                  title: selfLocked ? t('selfLocked') : undefined,
+                  title: selfLocked ? t('selfLocked') : row.composed === false ? t('offlineHint') : undefined,
                 },
                 h(PowerSwitch, {
                   checked: row.enabled,
@@ -2562,58 +2551,6 @@ function jobPhaseKey(phase) {
           );
         };
 
-        // 「关掉之后就查不到」是装配模型的必然结果：没被 compose 就没有 loader 条目。
-        // 这些行来自 listBundles()，只读装配层自己，不经过加载器。
-        const offline = Array.isArray(data.offline) ? data.offline : [];
-        const enableOffline = async (name) => {
-          setOfflineBusy(name);
-          try {
-            const answer = await request('/bundle', { name, enabled: true });
-            const stale =
-              answer && answer.result && answer.result.application !== 'applied'
-                ? ' · ' + t('offlineStale')
-                : '';
-            setToast({ kind: 'ok', text: t('offlineEnable') + ' ' + name + stale });
-            load();
-          } catch (error) {
-            setToast({ kind: 'warn', text: error instanceof Error ? error.message : String(error) });
-          } finally {
-            setOfflineBusy('');
-          }
-        };
-        const offlineNode =
-          tab === 'updates' || offline.length === 0
-            ? null
-            : h(
-                'div',
-                { className: 'pd-offline' },
-                h(
-                  'div',
-                  { className: 'pd-offline-head' },
-                  h('span', { className: 'pd-offline-title' }, t('offlineTitle', { n: String(offline.length) })),
-                  h('span', { className: 'pd-offline-hint' }, t('offlineHint')),
-                ),
-                offline.map((bundle) =>
-                  h(
-                    'div',
-                    { key: bundle.name, className: 'pd-offline-row' },
-                    h('span', { className: 'pd-offline-name' }, bundle.name),
-                    typeof bundle.version === 'string'
-                      ? h('span', { className: 'pd-offline-ver' }, 'v' + bundle.version)
-                      : null,
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'pd-btn pd-btn-sm',
-                        disabled: offlineBusy !== '',
-                        onClick: () => enableOffline(bundle.name),
-                      },
-                      offlineBusy === bundle.name ? t('loading') : t('offlineEnable'),
-                    ),
-                  ),
-                ),
-              );
         const installPanel = h(
           'div',
           { className: 'pd-updates' },
@@ -3054,14 +2991,9 @@ function jobPhaseKey(phase) {
             : null,
           tab === 'updates'
             ? h('div', null, installPanel, updatePanel)
-            : h(
-                'div',
-                null,
-                groups.length === 0
-                  ? h('div', { className: 'pd-empty' }, t('empty'))
-                  : groups.map(groupNode),
-                offlineNode,
-              ),
+            : groups.length === 0
+              ? h('div', { className: 'pd-empty' }, t('empty'))
+              : groups.map(groupNode),
           h(
             'div',
             { className: 'pd-foot' },
