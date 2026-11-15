@@ -1,19 +1,19 @@
-# dsh-plugin-rack · 插件管理
+# dsh-plugin-dashboard · 插件管理台
 
 DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个开关直接开关，更新完不用重启。**
 
 装在侧边栏，不用进设置页翻。
 
-## 它解决什么问题
+## 用来干什么
 
-插件多了以后，有几件事很烦：
+插件装多了以后有几件事很烦：
 
 - 装了哪些、现在开着还是关着、是本地开发版还是线上版，得一个个翻；
 - 关一个插件要重启整个 DSH；
 - 想看看有没有新版要自己去查 npm，装错了还得自己回滚；
 - 有些插件是 GitHub 直装、本地 tar 包、甚至只是个软链，普通办法根本看不出有没有新版。
 
-这个面板把这些一次性收进一个列表里。
+这个面板把它们收进一个列表。
 
 ## 功能
 
@@ -22,7 +22,7 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 - **四个页签**：已安装插件 / 核心组件 / 异常 / 更新。
 - 每行显示：**开关**、**手动或自动**标记、**装法来源**（npm、npmmirror、github、本地文件包、本地软链）、**有新版时的行内更新按钮**。
 - **点整行展开详情**：包名、版本、许可、作者、安装目录、依赖、GitHub / npm / 主页链接，以及具体功能说明。
-- 核心组件（`@deepseek-ai/*`）也全部列出，并按用途配了中文功能名，例如「插件设置」「文件工具」「会话检索」——知道哪个组件管什么，才不会误关。
+- 核心组件（`@deepseek-ai/*`）也全部列出，并按用途配了中文功能名，例如「插件设置」「文件工具」「会话检索」，知道哪个组件管什么才不会误关。
 - 「异常」页用来放加载失败的插件，写明失败原因；「被插件包关闭」这类由别的插件主动隐藏的组件会单独成组，**那不是故障**。
 
 ### 开关
@@ -37,20 +37,20 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 ### 更新
 
 - 「检查更新」把 profile 里按精确版本锁定的依赖逐个查 registry 最新版，有新的直接在列表行里标出来：`⬆ v0.1.29 ➡ v0.1.30 npm`，**点一下只更新那一个插件**。
-- 更新由宿主执行：**点完就可以关掉面板**，pnpm 照样跑完。重新打开面板时，顶部会显示「后台更新中 · N 个插件」，跑完了补一条结果提示——不用守着这个界面，也不用去翻日志。卡住了可以点横幅右边的「取消」。
+- 更新由宿主执行：**点完就可以关掉面板**，pnpm 照样跑完。重新打开面板时，顶部会显示「后台更新中 · N 个插件」，跑完了补一条结果提示。不用守着这个界面，也不用去翻日志。卡住了可以点横幅右边的「取消」。
 - **会话正忙时也不白点**：需要下载的更新会先把附件取下来、核对 sha256，然后排队；宿主每 10 秒看一眼，等所有会话都空了就自己装上（下载过的东西不会重下）。排队期间横幅显示「已排队…」。
-- **网络不用你配**：下载会自动选路——`config.json` 里明确指定的代理 → 环境变量（`HTTPS_PROXY` / `ALL_PROXY`，`NO_PROXY` 会照规矩跳过）→ 系统代理（Windows 的 Internet 设置）→ 直连；一条走不通就换下一条，不会因为代理没开就整个更新失败。HTTP 代理和 SOCKS5 都支持，带用户名密码也行，查 GitHub 接口的部分同样走这些代理。
+- **网络不用你配**：下载按这个顺序自动选路，`config.json` 里明确指定的代理 → 环境变量（`HTTPS_PROXY` / `ALL_PROXY`，`NO_PROXY` 会照规矩跳过）→ 系统代理（Windows 的 Internet 设置）→ 直连；一条走不通就换下一条，不会因为代理没开就整个更新失败。HTTP 代理和 SOCKS5 都支持，带用户名密码也行，查 GitHub 接口的部分同样走这些代理。
 - **pnpm 从哪来**：先找 PATH 上的 pnpm，再找 `%APPDATA%\npm`、`%LOCALAPPDATA%\pnpm`、`PNPM_HOME`、`~/.local/share/pnpm`、Homebrew 与系统级安装；Windows 的 `pnpm.cmd` / `pnpm.ps1` 会用 `cmd.exe` / `powershell` 包一层再跑。
 - 想固定某个代理，在数据目录写 `config.json`：`{ "download": { "proxy": "http://127.0.0.1:7897" } }`；写 `"off"` 就只直连；不写就是自动。
-- **断点续传**：连接断了按 `Range` 接着下，取消或失败后保留 `.part`，下次点更新从断的地方继续，不用重下 30 MB。总上限 30 分钟，30 秒没有数据即判定卡死——GitHub 偶尔会把连接挂住，宁可报错也不让面板一直转圈；下过的包按 sha256 复用，重试同一版本不会重新下载。
-- **所有更新通道合在一个列表、一个按钮里**：勾选后按来源自动分流——精确版本锁定的依赖合成一次 `pnpm add` 跑完；GitHub 直装走重新拉取；本地压缩包走「下载官方附件 → 核对 sha256 → 替换」；压缩包地址走重新 pin。每个渠道各自成败，一条渠道失败不会中断其它渠道，最后给一份合并报告（「N 组里 M 组失败，其余已完成」）。
+- **断点续传**：连接断了按 `Range` 接着下，取消或失败后保留 `.part`，下次点更新从断的地方继续，不用重下 30 MB。总上限 30 分钟，30 秒没有数据就判定卡死。GitHub 偶尔会把连接挂住，宁可报错也不让面板一直转圈。下过的包按 sha256 复用，重试同一版本不会重新下载。
+- **所有更新通道合在一个列表、一个按钮里**：勾选后按来源自动分流。精确版本锁定的依赖合成一次 `pnpm add` 跑完；GitHub 直装走重新拉取；本地压缩包走「下载官方附件 → 核对 sha256 → 替换」；压缩包地址走重新 pin。每个渠道各自成败，一条渠道失败不会中断其它渠道，最后给一份合并报告（「N 组里 M 组失败，其余已完成」）。
 - 装完**自动热替换**，新版本当场生效，不用重启；界面类插件刷新一下页面即可。
 - 能识别 **GitHub 直装 / npm 镜像 tar 包 / 本地文件包 / 本地软链** 这四种装法，并在同一个列表里标出各自来源；本地软链没有「升级」这回事，不会被勾选。
 - registry 取 profile 自己的配置（`pluginManager.registries()`），不强行走 npmjs；装了 `GITHUB_TOKEN` 的话查 GitHub 版本会用它提额。
 
 ### 安装与卸载
 
-- 输入包名先「检查」：**只做预检，什么都不动**。它会告诉你这是不是个 DSH 插件包、版本多少、干什么用的。像 `is-odd` 这种正常 npm 包会被拦下来——它没声明 `dsh.bundle`，装了也没用。
+- 输入包名先「检查」：**只做预检，什么都不动**。它会告诉你这是不是个 DSH 插件包、版本多少、干什么用的。像 `is-odd` 这种普通 npm 包会被拦下来，因为它没声明 `dsh.bundle`，装了也不会被加载。
 - 确认了再「安装」，走宿主官方的插件管理接口。
 - 每行可以「卸载」，**要点两下确认**；由宿主管理、不允许移除的核心包会被拒绝。
 
@@ -60,7 +60,7 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 
 - **动手之前先备份** `package.json` 与 `pnpm-lock.yaml`，失败整体写回；更新失败还会补跑一次重同步，避免「文件回滚了但 `node_modules` 没回滚」的假回滚。
 - **批量操作要过维护门**：有会话正在跑时不动文件，等它空闲。
-- **并发守卫**：安装 / 卸载 / 更新 / 批量操作四者互斥。同一个时刻只允许一条写操作在跑——两个 pnpm 同时改同一份 `package.json` 会把 profile 写坏。
+- **并发守卫**：安装 / 卸载 / 更新 / 批量操作四者互斥。同一时刻只允许一条写操作在跑。两个 pnpm 同时改同一份 `package.json` 会把 profile 写坏。
 - **面板不会卸载自己**；`removable` 为 false 的包一律拒绝。
 - 只有标为「自动」的插件才进批量范围，**页面筛选只能缩小范围，不能扩大**。
 - 核心组件**不会**被一刀切跳过：204 个 `@deepseek-ai/*` 行里只有 16 个真只读，其余受开关控制。真正被跳过的只有**面板自己那一行**（在自己发起的请求里关自己，会让正在响应的路由断掉）。
@@ -88,7 +88,7 @@ dsh plugin add github:LZM-P/dsh-plugin-dashboard
 **② 从 npm 装（发布后可用）**
 
 ```bash
-dsh plugin add dsh-plugin-rack
+dsh plugin add dsh-plugin-dashboard
 ```
 
 **③ 在插件管理界面里点「安装」**，把上面任意一条的 spec 填进去。
@@ -101,12 +101,12 @@ dsh plugin add dsh-plugin-rack
 ## 数据放在哪
 
 - 代码：插件自己的安装目录。
-- 运行时数据目录：`<DSH_HOME>/plugin-rack/profiles/<profile>/`（Windows 默认 `C:\Users\<你>\.dsh\plugin-rack\profiles\desktop\`）。一个 profile 一个目录，里面是：
-  - `state.json` —— 「哪些插件被标成了自动」和「面板自己创建过哪些配置覆盖」，几行 JSON。删掉只会让自动清单重置，**不影响任何插件**。
-  - `job.json` —— 正在跑或上一次跑完的更新任务，面板关掉再打开靠它接回来。
-  - `queue.json` —— 已下载校验、等会话空闲才装的更新。
-  - `config.json` —— 下载代理等手工配置。
-  - `last-update.log` / `update-log.jsonl` —— 最近一次更新的完整日志 + 每次更新的追加历史。
+- 运行时数据目录：`<DSH_HOME>/plugin-dashboard/profiles/<profile>/`（Windows 默认 `C:\Users\<你>\.dsh\plugin-dashboard\profiles\desktop\`）。一个 profile 一个目录，里面是：
+  - `state.json`：哪几个插件被标成了自动，以及面板自己创建过哪些配置覆盖。几行 JSON。删掉只会让自动清单重置，**不影响任何插件**。
+  - `job.json`：正在跑或上一次跑完的更新任务。面板关掉再打开靠它接回来。
+  - `queue.json`：已下载校验、等会话空闲才装的更新。
+  - `config.json`：下载代理等手工配置。
+  - `last-update.log` / `update-log.jsonl`：前一个是最近一次更新的完整日志，后一个是每次更新的追加历史。
 - **每个 profile 各存一份**：同一个 DSH 下开多个 profile 时，自动清单、正在跑的任务、待装队列、代理配置互不串台。
 
 ### 从旧版本升级（单一目录 → 按 profile 分目录）
@@ -123,9 +123,9 @@ dsh plugin add dsh-plugin-rack
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.js` | 宿主端：注册 `/api/dsh-plugin-rack` 前缀路由，负责读取插件状态、批量操作、更新与安装卸载 |
+| `index.js` | 宿主端：注册 `/api/dsh-plugin-dashboard` 前缀路由，负责读取插件状态、批量操作、更新与安装卸载 |
 | `client.js` | 客户端：侧边栏图标 + `main` 面板的界面（无需构建步骤，浏览器直接加载） |
-| `cordis.patch.yml` | bundle 补丁，插入 `plugin-rack` 这一行 |
+| `cordis.patch.yml` | bundle 补丁，插入 `plugin-dashboard` 这一行 |
 | `locale/{en,zh}.json` | 插件名与描述（插件管理页展示用） |
 | `icon.svg` | 插件图标 |
 | `test/self-check.mjs` | 自检脚本：词条对照、路由对照、hook 顺序、调试残留 |
@@ -135,27 +135,27 @@ dsh plugin add dsh-plugin-rack
 宿主端只暴露一个同源前缀路由，客户端直接用 `fetch` 调用，因此**不依赖** `remoteAccess` 对 `pluginManager/*` 的授权策略：
 
 ```
-GET  /api/dsh-plugin-rack/ping        存活探测，不碰任何服务
-GET  /api/dsh-plugin-rack/            ping 的别名
-GET  /api/dsh-plugin-rack/state       全部插件行 + 自动名单 + 批量进度
-GET  /api/dsh-plugin-rack/detail      某个插件的包信息（?entryId=）
-GET  /api/dsh-plugin-rack/updates     检查更新（按精确版本锁定的依赖）
-GET  /api/dsh-plugin-rack/extras      非精确版本的安装来源（github / tar 包 / 本地文件 / 软链），供更新页分流
-GET  /api/dsh-plugin-rack/updatelog   上一次更新的日志
-GET  /api/dsh-plugin-rack/registries  当前生效的 registry
-GET  /api/dsh-plugin-rack/removable   可以卸载的插件名单
-GET  /api/dsh-plugin-rack/inspect     安装预检（?spec=，只查不装）
-GET  /api/dsh-plugin-rack/fileplan    ?name= 本地 file: 依赖会升到哪个版本
-GET  /api/dsh-plugin-rack/job         正在跑的装包任务，或上一次的结果（running / finishedAt / interrupted）+ 待装队列
-POST /api/dsh-plugin-rack/job         { action: 'cancel' } 取消正在跑的那一次
-GET  /api/dsh-plugin-rack/summary     只读精简行，给脚本和 agent 用
-POST /api/dsh-plugin-rack/plugin      { entryId, enabled?, auto? }
-POST /api/dsh-plugin-rack/bulk        { enabled, scope, save?, cancel? }
-POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
-POST /api/dsh-plugin-rack/updates     { names: [...] }
-POST /api/dsh-plugin-rack/extras      { name, action }
-POST /api/dsh-plugin-rack/install     { spec }
-POST /api/dsh-plugin-rack/uninstall   { name }
+GET  /api/dsh-plugin-dashboard/ping        存活探测，不碰任何服务
+GET  /api/dsh-plugin-dashboard/            ping 的别名
+GET  /api/dsh-plugin-dashboard/state       全部插件行 + 自动名单 + 批量进度
+GET  /api/dsh-plugin-dashboard/detail      某个插件的包信息（?entryId=）
+GET  /api/dsh-plugin-dashboard/updates     检查更新（按精确版本锁定的依赖）
+GET  /api/dsh-plugin-dashboard/extras      非精确版本的安装来源（github / tar 包 / 本地文件 / 软链），供更新页分流
+GET  /api/dsh-plugin-dashboard/updatelog   上一次更新的日志
+GET  /api/dsh-plugin-dashboard/registries  当前生效的 registry
+GET  /api/dsh-plugin-dashboard/removable   可以卸载的插件名单
+GET  /api/dsh-plugin-dashboard/inspect     安装预检（?spec=，只查不装）
+GET  /api/dsh-plugin-dashboard/fileplan    ?name= 本地 file: 依赖会升到哪个版本
+GET  /api/dsh-plugin-dashboard/job         正在跑的装包任务，或上一次的结果（running / finishedAt / interrupted）+ 待装队列
+POST /api/dsh-plugin-dashboard/job         { action: 'cancel' } 取消正在跑的那一次
+GET  /api/dsh-plugin-dashboard/summary     只读精简行，给脚本和 agent 用
+POST /api/dsh-plugin-dashboard/plugin      { entryId, enabled?, auto? }
+POST /api/dsh-plugin-dashboard/bulk        { enabled, scope, save?, cancel? }
+POST /api/dsh-plugin-dashboard/roster      { mode: 'group', scope, auto }
+POST /api/dsh-plugin-dashboard/updates     { names: [...] }
+POST /api/dsh-plugin-dashboard/extras      { name, action }
+POST /api/dsh-plugin-dashboard/install     { spec }
+POST /api/dsh-plugin-dashboard/uninstall   { name }
 ```
 
 ### `save` 模式
@@ -177,19 +177,19 @@ POST /api/dsh-plugin-rack/uninstall   { name }
 这个插件会写你的 `cordis.patch.yml`、调 pnpm、删包。为了让这些操作可控，做了四层防护：
 
 1. **网络暴露面**：API 只在 `127.0.0.1` / `localhost` / `::1` 上可达。宿主的 web server 本来就只绑 loopback，所以外网碰不到这个端口。
-2. **Host / Origin 校验**：每个请求都先过两道闸——Host 头必须指向 loopback，Origin 头（如果存在）也必须解析到 loopback。这挡的是同机浏览器里的恶意网页：它无法用 `<img>` 或 `fetch` 跨站调用你的 API（DNS rebinding / CSRF 都被这两道闸拦下）。
-2b. **写操作还要求"你确实是从面板来的"**：`POST` 除了要 `application/json`，还必须带 `Origin`、或 `Sec-Fetch-Site: same-origin`、或显式加上 `x-dsh-plugin-rack: 1` 请求头。
+2. **Host / Origin 校验**：每个请求都先过两道闸：Host 头必须指向 loopback，Origin 头（如果存在）也必须解析到 loopback。这挡的是同机浏览器里的恶意网页：它无法用 `<img>` 或 `fetch` 跨站调用你的 API（DNS rebinding / CSRF 都被这两道闸拦下）。
+2b. **写操作还要求"你确实是从面板来的"**：`POST` 除了要 `application/json`，还必须带 `Origin`、或 `Sec-Fetch-Site: same-origin`、或显式加上 `x-dsh-plugin-dashboard: 1` 请求头。
 
    这道门挡的是**无意的跨站 POST**（比如别处一个表单顺手打过来、或者某个页面被 XSS 后盲发请求），它对「完全不带 Origin」的请求本来是不设防的，而 `curl -X POST` 正好属于这一类。
 
-   它**不是鉴权**：本机任何拿到这个端口的脚本，加一行请求头就能过。真要防住同机脚本，需要引入 token/随机口令——目前没有做，也不假装做了。面板自己永远带这个头；写脚本调接口时也带一个：
+   它**不是鉴权**：本机任何拿到这个端口的脚本，加一行请求头就能过。真要防住同机脚本得引入 token 或随机口令，目前没有做，也不假装做了。面板自己永远带这个头；写脚本调接口时也带一个：
    ```bash
-   curl -X POST http://127.0.0.1:9546/api/dsh-plugin-rack/bulk \
+   curl -X POST http://127.0.0.1:9546/api/dsh-plugin-dashboard/bulk \
      -H 'content-type: application/json' \
-     -H 'x-dsh-plugin-rack: 1' \
+     -H 'x-dsh-plugin-dashboard: 1' \
      -d '{"enabled":false,"scope":"installed"}'
    ```
-3. **卸载白名单**：界面上的「卸载」按钮不是对所有行都显示。只有宿主 `pluginManager` 服务明确标记为 `removable` 的包才会出现按钮。核心组件、面板自己、harness 命脉——这些**永远不会**出现在可卸载列表里，所以误点卸载也不会把系统拆坏。
+3. **卸载白名单**：界面上的「卸载」按钮不是对所有行都显示。只有宿主 `pluginManager` 服务明确标记为 `removable` 的包才会出现按钮。核心组件、面板自己、harness 命脉都**永远不会**出现在可卸载列表里，所以误点卸载也不会把系统拆坏。
 4. **更新回滚**：批量更新前会备份 `package.json` + `pnpm-lock.yaml` + `pnpm-workspace.yaml` 三个文件。pnpm 返回非零退出码时，先把这三个文件写回原内容，再跑一次 `pnpm install --prefer-offline` 把 `node_modules` 也拨回去。**失败 = 一个包都没改动**，不会留下半个新依赖树。
 
 写入 `cordis.patch.yml` 是原子操作（写临时文件 + rename），只删这个插件自己创建过的覆盖项，用户手写的内容原样保留。

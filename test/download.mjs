@@ -13,7 +13,7 @@ import { join } from 'node:path'
 
 const home = mkdtempSync(join(tmpdir(), 'rack-dl-'))
 process.env.DSH_HOME = home
-mkdirSync(join(home, 'plugin-rack'), { recursive: true })
+mkdirSync(join(home, 'plugin-dashboard'), { recursive: true })
 
 const mod = await import(new URL('../index.js', import.meta.url).href)
 const { downloadFile, fetchAny } = mod
@@ -33,7 +33,7 @@ function check(ok, label) {
 }
 
 function config(proxy) {
-  writeFileSync(join(home, 'plugin-rack', 'config.json'), JSON.stringify({ download: { proxy } }))
+  writeFileSync(join(home, 'plugin-dashboard', 'config.json'), JSON.stringify({ download: { proxy } }))
 }
 
 function listen(server) {
