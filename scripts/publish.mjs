@@ -40,7 +40,9 @@ if (versions.includes(pkg.version)) {
 
 console.log('publishing ' + pkg.name + '@' + pkg.version + (dryRun ? ' (dry run)' : ''))
 
-const args = ['publish', '--registry', REGISTRY, '--access', 'public']
+// --ignore-scripts: a lifecycle script named 'publish' in package.json would
+// otherwise run this very file again, one level deeper, per publish attempt.
+const args = ['publish', '--registry', REGISTRY, '--access', 'public', '--ignore-scripts']
 if (dryRun) args.push('--dry-run')
 
 // npm reads `npm_config_<key>` from the environment; the key is the .npmrc key
