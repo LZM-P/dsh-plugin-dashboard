@@ -205,6 +205,15 @@ check(CSS.includes('.pd-tag-warn'), 'the switched-off tag reuses the warn tag st
   }
 }
 
+// ── the 自动 roster decides a bulk update ───────────────────────────────────
+{
+  const panel = readFileSync(join('src','client','panel.js'), 'utf8')
+  check(panel.includes('const inAuto = (name) =>'), 'update rows are matched to the roster by name')
+  check(panel.includes('id === undefined ? true : roster.indexOf(id) >= 0'), 'a row with no known patchId is kept rather than dropped')
+  check(panel.includes('row.hasUpdate === true && inAuto(row.name)'), 'only Auto rows are pre-ticked')
+  check(panel.includes('updateOf.has(row.name) && isAuto(row)'), 'the group one-click button ignores manual rows')
+  check(panel.includes('knownManual(row.name)'), 'a manual row says so in the update list')
+}
 // ── the generated file is in sync with its parts ─────────────────────────────
 const build = spawnSync(process.execPath, ['scripts/build-client.mjs', '--check'], { encoding: 'utf8' })
 eq(build.status, 0, 'client.js matches src/client/*.js (run node scripts/build-client.mjs)')

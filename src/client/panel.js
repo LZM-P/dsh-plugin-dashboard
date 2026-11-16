@@ -271,6 +271,25 @@
 
         const roster = data && Array.isArray(data.roster) ? data.roster : [];
         const isAuto = (row) => row.patchId !== null && roster.indexOf(row.patchId) >= 0;
+        // /updates 的行只带包名，名单按 patchId 存，中间得有一张对照表。
+        // 拿不到对照的（github 压缩包、本地 tgz 这类只在 extras 里出现的包）
+        // 一律当成自动：查不到就说"不清楚"，不能悄悄把它们从一键更新里删掉。
+        const patchIdOf = new Map();
+        if (data !== null && Array.isArray(data.rows)) {
+          for (const row of data.rows) {
+            if (typeof row.name === 'string' && row.patchId !== null && row.patchId !== undefined) {
+              patchIdOf.set(row.name, row.patchId);
+            }
+          }
+        }
+        const inAuto = (name) => {
+          const id = patchIdOf.get(name);
+          return id === undefined ? true : roster.indexOf(id) >= 0;
+        };
+        const knownManual = (name) => {
+          const id = patchIdOf.get(name);
+          return id !== undefined && roster.indexOf(id) < 0;
+        };
 
         const run = React.useCallback(
           async (label, optimistic, call, key) => {
@@ -370,12 +389,18 @@
               extrasNext = null;
             }
             const choice = {};
-            for (const row of next.rows || []) if (row.hasUpdate) choice[row.name] = true;
+            // 只替「自动」名单里的行预先打勾。手动就是"别碰我"，一键更新必须
+            // 尊重它；手动行仍然可以自己点一下勾选，那是一次明确的单点操作，
+            // 不该被名单挡住。
+            for (const row of next.rows || []) {
+              if (row.hasUpdate === true && inAuto(row.name)) choice[row.name] = true;
+            }
             if (extrasNext !== null && Array.isArray(extrasNext.rows)) {
               for (const row of extrasNext.rows) {
                 if (row.hasUpdate !== true) continue;
                 if (typeof row.name !== 'string') continue;
-                choice[row.name] = true;
+                // extras 行同样只在自动名单里才预先勾上。
+                if (inAuto(row.name)) choice[row.name] = true;
               }
             }
             setPicked(choice);
@@ -397,7 +422,12 @@
           const names = Array.isArray(explicitNames)
             ? explicitNames
             : Object.keys(picked).filter((name) => picked[name] === true);
-          if (names.length === 0) return;
+          if (names.length === 0) {
+            // 空勾选以前是静默 return：按钮点了没反应，看着像坏了。这里说清
+            // 楚为什么没动——多半是这些行都被标成手动了。
+            setToast({ kind: 'warn', text: t('bulkNote') });
+            return;
+          }
           setUpdatesBusy('apply');
           setUpdateLog(null);
           try {
@@ -1483,9 +1513,10 @@
             (row) => row.manageable && isAuto(row) && !row.self,
           ).length;
           // 这一页里当前可以更新的包。updateOf 已经按「有新版且落在版本范围内」
-          // 组装好了，这里只做一次筛选，不重复判断范围。
+          // 组装好了，这里只做一次筛选，不重复判断范围。和一键开关一样，只有
+          // 自动名单里的行才算数——手动行必须留给用户自己点。
           const updatableHere = current.rows
-            .filter((row) => row.manageable && updateOf.has(row.name))
+            .filter((row) => row.manageable && updateOf.has(row.name) && isAuto(row))
             .map((row) => row.name);
           return h(
             'div',
@@ -1636,6 +1667,10 @@
             typeof row.spec === 'string' && row.kind !== 'exact'
               ? h('code', { className: 'pd-update-spec', title: row.spec }, row.spec)
               : null,
+            // 手动行默认不勾，也不该让人以为按钮坏了：这里直接写明它是手动。
+            knownManual(row.name)
+              ? h('span', { className: 'pd-tag pd-tag-warn', title: t('bulkNote') }, t('modeManual'))
+              : null,
             busyNow ? h('span', { className: 'pd-spin pd-update-busy' + (inRound ? ' pd-spin-live' : ''), title: t('rowUpdating') }) : null,
           );
         };
@@ -1750,6 +1785,9 @@
               { type: 'button', className: 'pd-btn', onClick: viewLog },
               t('viewLog'),
             ),
+            // 一键更新只认「自动」名单，这里把它写在按钮旁边，免得用户对着
+            // 一排没勾上的行猜为什么。
+            h('span', { className: 'pd-update-note' }, t('bulkNote')),
           ),
           logText === null
             ? null
