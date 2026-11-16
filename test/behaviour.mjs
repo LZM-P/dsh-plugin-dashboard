@@ -589,6 +589,17 @@ console.log('rollback is not cancellable')
 }
 
 
+console.log('origin check admits the desktop shell')
+{
+  const originAllowed = load('originAllowed')
+  check('the desktop renderer origin is allowed', originAllowed('dsh-app://app') === true)
+  check('a loopback page is allowed', originAllowed('http://127.0.0.1:30025') === true)
+  check('localhost is allowed', originAllowed('http://localhost:8080') === true)
+  check('another website is refused', originAllowed('https://evil.example') === false)
+  check('the null origin of a sandboxed frame is refused', originAllowed('null') === false)
+  check('a file page is refused', originAllowed('file:///c:/x.html') === false)
+  check('garbage is refused', originAllowed('') === false && originAllowed('not a url') === false)
+}
 console.log('a switched-off Windows proxy is not a route')
 {
   const proxyEnableAllows = load('proxyEnableAllows')

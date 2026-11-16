@@ -4177,6 +4177,34 @@ async function pumpQueue(ctx) {
  * The name part of a Host header. `[::1]:18338` has to come out as `::1`,
  * and a bare IPv6 literal has no port to strip, only brackets.
  */
+/**
+ * Whether a request's Origin may drive this API.
+ *
+ * The panel runs in the desktop shell, whose renderer is served from
+ * `dsh-app://app` — not from a loopback URL — so comparing only against
+ * 127.0.0.1 rejected every request the real panel made, and the page looked like
+ * it was still loading (the fetch failed, nothing rendered). The hosted web
+ * build does use a loopback origin, so both spellings have to pass.
+ *
+ * What this still refuses is the thing it was written for: any origin that is
+ * not this app. A `file://` page, a random website and the `null` origin of a
+ * sandboxed frame all fall through to false.
+ */
+function originAllowed(origin) {
+  let parsed
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false
+  }
+  const host = parsed.hostname.toLowerCase()
+  if (host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]') return true
+  // The desktop shell's own scheme. `new URL('dsh-app://app')` gives
+  // hostname 'app', so the protocol is what identifies it.
+  if (parsed.protocol === 'dsh-app:') return true
+  return false
+}
+
 function hostName(raw) {
   const text = String(raw ?? '').trim().toLowerCase()
   if (text === '') return ''
@@ -4204,15 +4232,7 @@ async function handle(ctx, req, res) {
   }
   const origin = req.headers.origin
   if (typeof origin === 'string' && origin !== '') {
-    let originHost = ''
-    try {
-      originHost = new URL(origin).hostname.toLowerCase()
-    } catch {
-      return send(res, 403, { ok: false, message: 'bad origin' })
-    }
-    const originOk =
-      originHost === '127.0.0.1' || originHost === 'localhost' || originHost === '::1' || originHost === '[::1]'
-    if (!originOk) {
+    if (!originAllowed(origin)) {
       return send(res, 403, { ok: false, message: 'origin not allowed' })
     }
   }
