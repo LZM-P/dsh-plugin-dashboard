@@ -151,6 +151,7 @@ check(CSS.includes('.pd-skel-bar'), 'the skeleton rows carry placeholder bars')
 {
   const panel = readFileSync(join('src','client','panel.js'), 'utf8')
   check(panel.includes('pd-skel'), 'the loading branch renders the skeleton')
+  check(panel.includes('slowLoad'), 'a slow first load says so instead of spinning forever')
   check(!panel.includes("className: 'pd-empty' }, '...'"), 'the bare ellipsis is gone')
 }
 {

@@ -149,6 +149,9 @@
 
         const [data, setData] = React.useState(null);
         const [error, setError] = React.useState(null);
+        // 第一份快照要读两百多行 manifest（实测一秒出头）。骨架屏本身分不出
+        // 「还在读」和「卡住了」，所以超过这个时限就把话说清楚。
+        const [slowLoad, setSlowLoad] = React.useState(false);
         const [busy, setBusy] = React.useState(false);
         const [pending, setPending] = React.useState({});
         const [bulkJob, setBulkRun] = React.useState(null);
@@ -235,6 +238,17 @@
         React.useEffect(() => {
           load();
         }, [load]);
+
+        // 只有「还没有第一份数据」时才需要这个计时器：之后的刷新有自己的
+        // 进度提示，盯着这里的慢加载只会误报。
+        React.useEffect(() => {
+          if (data !== null) {
+            setSlowLoad(false);
+            return undefined;
+          }
+          const timer = setTimeout(() => setSlowLoad(true), 4000);
+          return () => clearTimeout(timer);
+        }, [data]);
 
         // load() 清掉了详情缓存，把仍然展开着的行重新取一遍，别让它们停在空白上。
         // 依赖里带上 details，是为了在“缓存被清空”的那一次渲染后立刻补回来。
@@ -850,7 +864,7 @@
                 'div',
                 { className: 'pd-skel-head' },
                 h('span', { className: 'pd-spin' }),
-                h('span', null, t('loading')),
+                h('span', null, slowLoad ? t('loadingSlow') : t('loading')),
               ),
               // 六行足够占住位置，也不至于让人以为列表已经出来了。
               [0, 1, 2, 3, 4, 5].map((index) => skeleton('s' + index)),
