@@ -611,6 +611,21 @@ console.log('a switched-off Windows proxy is not a route')
   check('the route reads the switch, not only the server', source.includes('proxyEnableAllows(query.stdout)'))
 }
 
+// ── the 自动 roster starts full and stays full ───────────────────────────────
+{
+  const catchUpRoster = load('catchUpRoster')
+  const fresh = catchUpRoster({ seeded: false, auto: [], removed: [] }, ['a', 'b'])
+  check('a fresh profile puts every installed plugin in the roster', fresh.auto.join(',') === 'a,b', fresh.auto.join(','))
+  check('the fresh seed counts as a change', fresh.changed === true)
+  const grown = catchUpRoster({ seeded: true, auto: ['a'], removed: [] }, ['a', 'b'])
+  check('a plugin installed later joins on its own', grown.auto.join(',') === 'a,b', grown.auto.join(','))
+  const held = catchUpRoster({ seeded: true, auto: ['a'], removed: ['b'] }, ['a', 'b'])
+  check('an id the user unticked does not come back', held.auto.join(',') === 'a', held.auto.join(','))
+  check('nothing to do reports no change', held.changed === false)
+  const legacy = catchUpRoster({ seeded: true, auto: ['a'] }, ['a', 'b'])
+  check('an old state file without removed defaults to all', legacy.auto.join(',') === 'a,b', legacy.auto.join(','))
+}
+
 if (failures.length > 0) {
   console.log('')
   console.log('BEHAVIOUR_CHECK_FAILED: ' + failures.length + ' problem(s)')

@@ -408,7 +408,9 @@ function jobStatus() {
 }
 
 function emptyRoster() {
-  return { version: 1, seeded: false, auto: [], created: [] }
+  // `removed` 是「用户亲手取消过」的名单。没有它就无法区分「还没决定」和
+  // 「决定不要」——每次刷新把没勾的补回来，用户就永远取消不掉勾选。
+  return { version: 1, seeded: false, auto: [], removed: [], created: [] }
 }
 
 function loadRoster() {
@@ -441,6 +443,7 @@ function roster() {
   if (rosterState === null) {
     const loaded = loadRoster()
     rosterState = loaded.state
+    if (!Array.isArray(rosterState.removed)) rosterState.removed = []
     storageMode = loaded.storage
   }
   return rosterState
@@ -1040,12 +1043,32 @@ async function readRows(ctx) {
   return rows
 }
 
+/**
+ * Bring the 自动 roster up to "everything installed is in it".
+ *
+ * Pure so it can be tested without a host: the seeding used to run once and
+ * then never again, which meant plugins installed later silently never joined
+ * the roster. `removed` is the escape hatch — an id the user unticked by hand
+ * must not come back on the next refresh.
+ */
+function catchUpRoster(state, installed) {
+  const auto = Array.isArray(state.auto) ? state.auto.slice() : []
+  const removed = new Set(Array.isArray(state.removed) ? state.removed : [])
+  const missing = installed.filter(id => id !== null && !auto.includes(id) && !removed.has(id))
+  return {
+    auto: missing.length > 0 ? [...auto, ...missing] : auto,
+    changed: state.seeded !== true || missing.length > 0,
+  }
+}
+
 async function snapshot(ctx) {
   const rows = await readRows(ctx)
   const state = roster()
 
-  if (!state.seeded) {
-    state.auto = installedRoster(rows)
+  // 默认全部参与：装上的插件都进名单，用户不必先勾一遍才能用一键更新。
+  const gathered = catchUpRoster(state, installedRoster(rows))
+  if (gathered.changed) {
+    state.auto = gathered.auto
     state.seeded = true
     persistRoster()
   }
@@ -1053,8 +1076,11 @@ async function snapshot(ctx) {
   // Drop roster entries whose row disappeared, so the count always matches.
   const known = new Set(rows.filter(row => row.manageable).map(row => row.patchId))
   const pruned = state.auto.filter(id => known.has(id))
-  if (pruned.length !== state.auto.length) {
+  const keptRemoved = (Array.isArray(state.removed) ? state.removed : []).filter(id => known.has(id))
+  const removedChanged = keptRemoved.length !== (Array.isArray(state.removed) ? state.removed.length : 0)
+  if (pruned.length !== state.auto.length || removedChanged) {
     state.auto = pruned
+    state.removed = keptRemoved
     persistRoster()
   }
 
@@ -1064,6 +1090,7 @@ async function snapshot(ctx) {
     rows,
 
     roster: state.auto.slice(),
+    supports: { rosterNames: true },
     storage: storageMode,
     statePath: stateFile(),
     bulk: bulkSnapshot(),
@@ -1192,10 +1219,14 @@ async function actPlugin(ctx, body) {
       result = { entryId, ok: false, message: 'row cannot join the 自动 roster (read-only)' }
     } else if (body.auto) {
       if (!state.auto.includes(row.patchId)) state.auto.push(row.patchId)
+      state.removed = (Array.isArray(state.removed) ? state.removed : []).filter(id => id !== row.patchId)
       persistRoster()
       result = result ?? { entryId, ok: true, application: 'applied' }
     } else {
       state.auto = state.auto.filter(id => id !== row.patchId)
+      const removed = Array.isArray(state.removed) ? state.removed : []
+      if (!removed.includes(row.patchId)) removed.push(row.patchId)
+      state.removed = removed
       persistRoster()
       result = result ?? { entryId, ok: true, application: 'applied' }
     }
@@ -1575,18 +1606,24 @@ async function actRoster(ctx, mode, scope, auto) {
   const rows = await readRows(ctx)
   const state = roster()
 
-  if (mode !== 'group') throw new Error(`unknown roster mode: ${mode}`)
-
-  const wanted = new Set(
-    rows
-      .filter(row => inScope(row, scope))
-      .map(row => row.patchId),
-  )
+  // 'group' 按范围（installed/core/failed），'names' 按包名列表——更新页的
+  // 「全选 / 全不选」用它，一次请求改完整份名单，不用发 N 个单行请求。
+  if (mode !== 'group' && mode !== 'names') throw new Error(`unknown roster mode: ${mode}`)
+  const pick = mode === 'group'
+    ? rows.filter(row => inScope(row, scope))
+    : rows.filter(row => Array.isArray(scope) && scope.includes(row.name))
+  const wanted = new Set(pick.map(row => row.patchId).filter(id => id !== null))
+  const removed = new Set(Array.isArray(state.removed) ? state.removed : [])
   if (auto === true) {
-    for (const id of wanted) if (!state.auto.includes(id)) state.auto.push(id)
+    for (const id of wanted) {
+      if (!state.auto.includes(id)) state.auto.push(id)
+      removed.delete(id)
+    }
   } else {
     state.auto = state.auto.filter(id => !wanted.has(id))
+    for (const id of wanted) removed.add(id)
   }
+  state.removed = [...removed]
   state.seeded = true
   persistRoster()
   return await snapshot(ctx)
@@ -4477,7 +4514,12 @@ async function handle(ctx, req, res) {
     return send(
       res,
       200,
-      await actRoster(ctx, String(body.mode ?? ''), String(body.scope ?? ''), body.auto === true),
+      await actRoster(
+        ctx,
+        String(body.mode ?? ''),
+        body.mode === 'names' && Array.isArray(body.names) ? body.names : String(body.scope ?? ''),
+        body.auto === true,
+      ),
     )
   }
   const allowed = ROUTES[path]

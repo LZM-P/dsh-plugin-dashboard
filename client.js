@@ -80,6 +80,10 @@ window.__ModuleLoader__.load({
         loading: 'loading',
         bulkNote: 'Nothing ticked has a newer version',
         pickHint: 'Tick a plugin to include it in one-click update',
+        rosterTally: 'In one-click update: {n} / {total}',
+        selectAllRoster: 'All',
+        selectNoneRoster: 'None',
+        orphanRow: 'no entry',
         upToDate: 'up to date',
         detail: 'Details',
         dModule: 'Module',
@@ -253,6 +257,10 @@ window.__ModuleLoader__.load({
         loading: '加载中',
         bulkNote: '勾选里没有带新版的插件',
         pickHint: '勾上的插件才参与一键更新',
+        rosterTally: '参与一键更新 {n} / {total}',
+        selectAllRoster: '全选',
+        selectNoneRoster: '全不选',
+        orphanRow: '无入口',
         upToDate: '已是最新',
         detail: '详细信息',
         dModule: '模块',
@@ -988,17 +996,33 @@ function jobPhaseKey(phase) {
       '.pd-updates{display:flex;flex-direction:column;gap:8px;padding:2px 0}',
       '.pd-update-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
       '.pd-hint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
-      '.pd-update-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;cursor:pointer}',
-      // 已经是最新的行：压暗一档，让"需要动手的"和"不用管的"一眼分开。
-      '.pd-update-row-done{opacity:.55;cursor:default}',
-      '.pd-update-row-busy{background:var(--dsw-alias-interactive-bg-hover);cursor:default}',
-      '.pd-update-busy{margin-left:auto;flex:none;border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
-                                                '.pd-update-row-done:hover{opacity:.8}',
+      // 名单一行一个插件：左边身份（名字 + 范围/来源），右边状态（版本变化）。
+      // 勾上的整行实心、没勾的压暗，扫一眼就知道谁会跟着一键更新走。
+      '.pd-update-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;',
+      'border:1px solid transparent;transition:background .12s ease,border-color .12s ease}',
       '.pd-update-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
-      '.pd-update-name{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.pd-update-ver{flex:none;font-size:12px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
-      '.pd-update-spec{flex:none;font-family:inherit;font-size:10px;line-height:16px;padding:0 5px;border-radius:5px;',
+      '.pd-update-row-off{opacity:.52}',
+      '.pd-update-row-off:hover{opacity:.8}',
+      '.pd-update-row-on{background:var(--dsw-alias-bg-layer-2)}',
+      '.pd-update-row-on:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.pd-update-row-busy{background:var(--dsw-alias-interactive-bg-hover);cursor:default}',
+      '.pd-update-main{flex:1;min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden}',
+      '.pd-update-name{min-width:0;font-size:13px;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.pd-update-row-on .pd-update-name{font-weight:600}',
+      '.pd-update-meta{flex:none;display:inline-flex;align-items:center;gap:6px}',
+      '.pd-update-meta code{font-family:inherit;font-size:10px;line-height:16px;padding:0 5px;border-radius:5px;',
       'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary)}',
+      '.pd-update-ver{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:12px;line-height:18px;',
+      'font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary)}',
+      '.pd-update-ver-idle{color:var(--dsw-alias-label-tertiary)}',
+      '.pd-update-from{color:var(--dsw-alias-label-tertiary)}',
+      '.pd-update-arrow{color:var(--dsw-alias-brand-primary)}',
+      '.pd-update-to{font-weight:600;color:var(--dsw-alias-brand-primary)}',
+      '.pd-update-busy{flex:none;border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
+      // 名单汇总条：「参与一键更新 12 / 33」+ 全选/全不选
+      '.pd-roster-bar{display:flex;align-items:center;gap:10px;padding:0 12px 8px;flex-wrap:wrap}',
+      '.pd-roster-count{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+      '.pd-roster-act{margin-left:auto;display:inline-flex;gap:6px}',
       '.pd-check{flex:none;width:15px;height:15px;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}',
       '.pd-update-log{padding:10px 12px;border-radius:9px;font-size:12px;line-height:18px;background:var(--dsw-alias-bg-layer-2)}',
       '.pd-update-log-ok{border:1px solid var(--dsw-alias-state-success-primary)}',
@@ -1571,6 +1595,24 @@ function jobPhaseKey(phase) {
           setQueued((prev) => prev.slice(1));
           applyUpdates([next]);
         }, [queued, busy, job, updatesBusy, extrasBusy, applyUpdates]);
+
+        // 全选 / 全不选：一次请求改完整份名单，不再发 N 个单行请求。
+        const setRosterAll = React.useCallback(
+          async (names, auto) => {
+            if (updatesBusy !== '' || typeof request !== 'function') return;
+            setUpdatesBusy('roster');
+            try {
+              await request('/roster', { mode: 'names', names, auto });
+              await load();
+            } catch (error) {
+              setToast({ kind: 'err', text: String(error && error.message) });
+            } finally {
+              setUpdatesBusy('');
+            }
+          },
+          [updatesBusy, load],
+        );
+
 
         // 「可卸载」名单由宿主给：只有 removable === true 且真挂在 profile 上的包才在里面。
         // 核心组件和面板自己会被服务端直接挡掉，这里只是决定要不要显示按钮。
@@ -2694,38 +2736,52 @@ function jobPhaseKey(phase) {
         const roundRow = (name) =>
           job !== null && job.running === true && Array.isArray(job.installing) && job.installing.indexOf(name) >= 0;
 
-        // 更新页是「谁参与一键更新」的选择器：每个可管理的插件一行，勾上就进名单。
-        // 所以这里不按「有没有新版」过滤 —— 没新版的行同样要能勾：勾的是身份，
-        // 不是这一版有没有得装。
         const rosterRow = (row, extra) => {
           const busyNow = busyRow(row.name);
           const inRound = busyNow && roundRow(row.name);
           const info = updateBy.get(row.name) || null;
           const fresh = info !== null || (extra !== null && extra.hasUpdate === true);
-          let label = null;
-          if (info !== null) label = info.current + ' → ' + info.latest;
-          else if (fresh) label = String(extra.current || '') + ' → ' + String(extra.latest || '');
+          const on = isAuto(row);
           const spec = info !== null ? info.spec : null;
           const kind = info !== null ? info.kind : null;
+          const from = info !== null ? info.source : extra !== null ? String(extra.source || '') : '';
+          const current = info !== null ? info.current : extra !== null ? String(extra.current || '') : '';
+          const latest = info !== null ? info.latest : extra !== null ? String(extra.latest || '') : '';
+          const cls =
+            'pd-update-row' +
+            (on ? ' pd-update-row-on' : ' pd-update-row-off') +
+            (fresh ? ' pd-update-row-fresh' : '') +
+            (busyNow ? ' pd-update-row-busy' : '');
           return h(
             'label',
-            { key: row.name, className: 'pd-update-row' + (busyNow ? ' pd-update-row-busy' : '') },
+            { key: row.name, className: cls, title: t('pickHint') },
             h('input', {
               type: 'checkbox',
               className: 'pd-check',
-              checked: isAuto(row),
+              checked: on,
               disabled: updatesBusy !== '' || busyNow,
-              title: t('pickHint'),
-              onChange: () => setAuto(row, !isAuto(row)),
+              onChange: () => setAuto(row, !on),
             }),
-            h('span', { className: 'pd-update-name' }, row.name),
-            label === null
-              ? h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate'))
-              : h('span', { className: 'pd-update-ver' }, label),
-            typeof spec === 'string' && kind !== 'exact'
-              ? h('code', { className: 'pd-update-spec', title: spec }, spec)
-              : null,
-            extra !== null && extra.source === 'github' ? h('span', { className: 'pd-tag' }, 'github') : null,
+            h(
+              'span',
+              { className: 'pd-update-main' },
+              h('span', { className: 'pd-update-name' }, row.name),
+              h(
+                'span',
+                { className: 'pd-update-meta' },
+                typeof spec === 'string' && kind !== 'exact' ? h('code', null, spec) : null,
+                from === '' || from === 'npm' ? null : h('span', { className: 'pd-tag' }, from),
+              ),
+            ),
+            fresh
+              ? h(
+                  'span',
+                  { className: 'pd-update-ver' },
+                  h('span', { className: 'pd-update-from' }, current),
+                  h('span', { className: 'pd-update-arrow' }, '→'),
+                  h('span', { className: 'pd-update-to' }, latest),
+                )
+              : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
             busyNow
               ? h('span', {
                   className: 'pd-spin pd-update-busy' + (inRound ? ' pd-spin-live' : ''),
@@ -2736,6 +2792,7 @@ function jobPhaseKey(phase) {
         };
 
         const installPanel = h(
+
           'div',
           { className: 'pd-updates' },
           h(
@@ -2868,9 +2925,15 @@ function jobPhaseKey(phase) {
             if (data === null) return h('div', { className: 'pd-empty' }, t('loading'));
             // 这一页列出所有插件，而不是只列「有新版」的那几个：勾选是设置在
             // 先，装包在后，用户得能看到完整名单才能决定谁参与一键更新。
-            const rows = (Array.isArray(data.rows) ? data.rows : []).filter(
-              (row) => row.manageable === true && row.self !== true && isPlugin(row),
-            );
+            const all = Array.isArray(data.rows) ? data.rows : [];
+            const rows = all
+              .filter((row) => row.manageable === true && row.self !== true && isPlugin(row))
+              .sort((left, right) => {
+                const leftFresh = updateBy.has(left.name) ? 0 : 1;
+                const rightFresh = updateBy.has(right.name) ? 0 : 1;
+                if (leftFresh !== rightFresh) return leftFresh - rightFresh;
+                return left.name.localeCompare(right.name);
+              });
             const known = new Set(rows.map((row) => row.name));
             // extras 里那些在状态列表里找不到的包（少数只在 package.json 里留
             // 了条目的）也列出来，否则它们会凭空消失。
@@ -2880,16 +2943,65 @@ function jobPhaseKey(phase) {
             if (rows.length === 0 && orphans.length === 0) {
               return h('div', { className: 'pd-empty' }, t('updateNone'));
             }
+            const ticked = rows.filter((row) => isAuto(row)).length;
             return [
+              h(
+                'div',
+                { key: 'roster-bar', className: 'pd-roster-bar' },
+                h(
+                  'span',
+                  { className: 'pd-roster-count' },
+                  t('rosterTally', { n: String(ticked), total: String(rows.length) }),
+                ),
+                // 老宿主不认 mode:'names'（批量勾选是后加的）。按钮就不显示，
+                // 而不是给一个点了报 400 的按钮。
+                data.supports === undefined || data.supports === null || data.supports.rosterNames !== true
+                  ? null
+                  : h(
+                  'span',
+                  { className: 'pd-roster-act' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pd-btn pd-btn-sm',
+                      disabled: updatesBusy !== '' || ticked === rows.length,
+                      onClick: () => setRosterAll(rows.map((row) => row.name), true),
+                    },
+                    t('selectAllRoster'),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pd-btn pd-btn-sm',
+                      disabled: updatesBusy !== '' || ticked === 0,
+                      onClick: () => setRosterAll(rows.map((row) => row.name), false),
+                    },
+                    t('selectNoneRoster'),
+                  ),
+                ),
+              ),
               ...rows.map((row) => rosterRow(row, extraBy.get(row.name) || null)),
               ...orphans.map((row) =>
                 h(
                   'label',
-                  { key: row.name, className: 'pd-update-row' },
+                  { key: row.name, className: 'pd-update-row pd-update-row-off' },
                   h('input', { type: 'checkbox', className: 'pd-check', checked: inAuto(row.name), disabled: true }),
-                  h('span', { className: 'pd-update-name' }, row.name),
+                  h(
+                    'span',
+                    { className: 'pd-update-main' },
+                    h('span', { className: 'pd-update-name' }, row.name),
+                    h('span', { className: 'pd-update-meta' }, h('span', { className: 'pd-tag' }, t('orphanRow'))),
+                  ),
                   row.hasUpdate === true
-                    ? h('span', { className: 'pd-update-ver' }, String(row.current || '') + ' → ' + String(row.latest || ''))
+                    ? h(
+                        'span',
+                        { className: 'pd-update-ver' },
+                        h('span', { className: 'pd-update-from' }, String(row.current || '')),
+                        h('span', { className: 'pd-update-arrow' }, '→'),
+                        h('span', { className: 'pd-update-to' }, String(row.latest || '')),
+                      )
                     : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
                 ),
               ),

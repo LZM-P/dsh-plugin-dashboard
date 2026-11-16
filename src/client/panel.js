@@ -562,6 +562,24 @@
           applyUpdates([next]);
         }, [queued, busy, job, updatesBusy, extrasBusy, applyUpdates]);
 
+        // 全选 / 全不选：一次请求改完整份名单，不再发 N 个单行请求。
+        const setRosterAll = React.useCallback(
+          async (names, auto) => {
+            if (updatesBusy !== '' || typeof request !== 'function') return;
+            setUpdatesBusy('roster');
+            try {
+              await request('/roster', { mode: 'names', names, auto });
+              await load();
+            } catch (error) {
+              setToast({ kind: 'err', text: String(error && error.message) });
+            } finally {
+              setUpdatesBusy('');
+            }
+          },
+          [updatesBusy, load],
+        );
+
+
         // 「可卸载」名单由宿主给：只有 removable === true 且真挂在 profile 上的包才在里面。
         // 核心组件和面板自己会被服务端直接挡掉，这里只是决定要不要显示按钮。
         const checkRemovable = React.useCallback(async () => {
@@ -1684,38 +1702,52 @@
         const roundRow = (name) =>
           job !== null && job.running === true && Array.isArray(job.installing) && job.installing.indexOf(name) >= 0;
 
-        // 更新页是「谁参与一键更新」的选择器：每个可管理的插件一行，勾上就进名单。
-        // 所以这里不按「有没有新版」过滤 —— 没新版的行同样要能勾：勾的是身份，
-        // 不是这一版有没有得装。
         const rosterRow = (row, extra) => {
           const busyNow = busyRow(row.name);
           const inRound = busyNow && roundRow(row.name);
           const info = updateBy.get(row.name) || null;
           const fresh = info !== null || (extra !== null && extra.hasUpdate === true);
-          let label = null;
-          if (info !== null) label = info.current + ' → ' + info.latest;
-          else if (fresh) label = String(extra.current || '') + ' → ' + String(extra.latest || '');
+          const on = isAuto(row);
           const spec = info !== null ? info.spec : null;
           const kind = info !== null ? info.kind : null;
+          const from = info !== null ? info.source : extra !== null ? String(extra.source || '') : '';
+          const current = info !== null ? info.current : extra !== null ? String(extra.current || '') : '';
+          const latest = info !== null ? info.latest : extra !== null ? String(extra.latest || '') : '';
+          const cls =
+            'pd-update-row' +
+            (on ? ' pd-update-row-on' : ' pd-update-row-off') +
+            (fresh ? ' pd-update-row-fresh' : '') +
+            (busyNow ? ' pd-update-row-busy' : '');
           return h(
             'label',
-            { key: row.name, className: 'pd-update-row' + (busyNow ? ' pd-update-row-busy' : '') },
+            { key: row.name, className: cls, title: t('pickHint') },
             h('input', {
               type: 'checkbox',
               className: 'pd-check',
-              checked: isAuto(row),
+              checked: on,
               disabled: updatesBusy !== '' || busyNow,
-              title: t('pickHint'),
-              onChange: () => setAuto(row, !isAuto(row)),
+              onChange: () => setAuto(row, !on),
             }),
-            h('span', { className: 'pd-update-name' }, row.name),
-            label === null
-              ? h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate'))
-              : h('span', { className: 'pd-update-ver' }, label),
-            typeof spec === 'string' && kind !== 'exact'
-              ? h('code', { className: 'pd-update-spec', title: spec }, spec)
-              : null,
-            extra !== null && extra.source === 'github' ? h('span', { className: 'pd-tag' }, 'github') : null,
+            h(
+              'span',
+              { className: 'pd-update-main' },
+              h('span', { className: 'pd-update-name' }, row.name),
+              h(
+                'span',
+                { className: 'pd-update-meta' },
+                typeof spec === 'string' && kind !== 'exact' ? h('code', null, spec) : null,
+                from === '' || from === 'npm' ? null : h('span', { className: 'pd-tag' }, from),
+              ),
+            ),
+            fresh
+              ? h(
+                  'span',
+                  { className: 'pd-update-ver' },
+                  h('span', { className: 'pd-update-from' }, current),
+                  h('span', { className: 'pd-update-arrow' }, '→'),
+                  h('span', { className: 'pd-update-to' }, latest),
+                )
+              : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
             busyNow
               ? h('span', {
                   className: 'pd-spin pd-update-busy' + (inRound ? ' pd-spin-live' : ''),
@@ -1726,6 +1758,7 @@
         };
 
         const installPanel = h(
+
           'div',
           { className: 'pd-updates' },
           h(
@@ -1858,9 +1891,15 @@
             if (data === null) return h('div', { className: 'pd-empty' }, t('loading'));
             // 这一页列出所有插件，而不是只列「有新版」的那几个：勾选是设置在
             // 先，装包在后，用户得能看到完整名单才能决定谁参与一键更新。
-            const rows = (Array.isArray(data.rows) ? data.rows : []).filter(
-              (row) => row.manageable === true && row.self !== true && isPlugin(row),
-            );
+            const all = Array.isArray(data.rows) ? data.rows : [];
+            const rows = all
+              .filter((row) => row.manageable === true && row.self !== true && isPlugin(row))
+              .sort((left, right) => {
+                const leftFresh = updateBy.has(left.name) ? 0 : 1;
+                const rightFresh = updateBy.has(right.name) ? 0 : 1;
+                if (leftFresh !== rightFresh) return leftFresh - rightFresh;
+                return left.name.localeCompare(right.name);
+              });
             const known = new Set(rows.map((row) => row.name));
             // extras 里那些在状态列表里找不到的包（少数只在 package.json 里留
             // 了条目的）也列出来，否则它们会凭空消失。
@@ -1870,16 +1909,65 @@
             if (rows.length === 0 && orphans.length === 0) {
               return h('div', { className: 'pd-empty' }, t('updateNone'));
             }
+            const ticked = rows.filter((row) => isAuto(row)).length;
             return [
+              h(
+                'div',
+                { key: 'roster-bar', className: 'pd-roster-bar' },
+                h(
+                  'span',
+                  { className: 'pd-roster-count' },
+                  t('rosterTally', { n: String(ticked), total: String(rows.length) }),
+                ),
+                // 老宿主不认 mode:'names'（批量勾选是后加的）。按钮就不显示，
+                // 而不是给一个点了报 400 的按钮。
+                data.supports === undefined || data.supports === null || data.supports.rosterNames !== true
+                  ? null
+                  : h(
+                  'span',
+                  { className: 'pd-roster-act' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pd-btn pd-btn-sm',
+                      disabled: updatesBusy !== '' || ticked === rows.length,
+                      onClick: () => setRosterAll(rows.map((row) => row.name), true),
+                    },
+                    t('selectAllRoster'),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pd-btn pd-btn-sm',
+                      disabled: updatesBusy !== '' || ticked === 0,
+                      onClick: () => setRosterAll(rows.map((row) => row.name), false),
+                    },
+                    t('selectNoneRoster'),
+                  ),
+                ),
+              ),
               ...rows.map((row) => rosterRow(row, extraBy.get(row.name) || null)),
               ...orphans.map((row) =>
                 h(
                   'label',
-                  { key: row.name, className: 'pd-update-row' },
+                  { key: row.name, className: 'pd-update-row pd-update-row-off' },
                   h('input', { type: 'checkbox', className: 'pd-check', checked: inAuto(row.name), disabled: true }),
-                  h('span', { className: 'pd-update-name' }, row.name),
+                  h(
+                    'span',
+                    { className: 'pd-update-main' },
+                    h('span', { className: 'pd-update-name' }, row.name),
+                    h('span', { className: 'pd-update-meta' }, h('span', { className: 'pd-tag' }, t('orphanRow'))),
+                  ),
                   row.hasUpdate === true
-                    ? h('span', { className: 'pd-update-ver' }, String(row.current || '') + ' → ' + String(row.latest || ''))
+                    ? h(
+                        'span',
+                        { className: 'pd-update-ver' },
+                        h('span', { className: 'pd-update-from' }, String(row.current || '')),
+                        h('span', { className: 'pd-update-arrow' }, '→'),
+                        h('span', { className: 'pd-update-to' }, String(row.latest || '')),
+                      )
                     : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
                 ),
               ),
