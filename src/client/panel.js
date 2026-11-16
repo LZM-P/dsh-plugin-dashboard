@@ -827,12 +827,50 @@
         }
 
         if (data === null) {
+          // 第一份 /state 要遍历两百多行 manifest，实测一秒多。以前这里只有一个
+          // 孤零零的 `...`，看起来就是「卡住了」——换成骨架屏，至少让人知道它在
+          // 读，而且读的东西长什么样。
+          const skeleton = (key) =>
+            h(
+              'div',
+              { key: key, className: 'pd-skel-row' },
+              h('span', { className: 'pd-skel-dot' }),
+              h('span', { className: 'pd-skel-bar pd-skel-bar-wide' }),
+              h('span', { className: 'pd-skel-bar pd-skel-bar-narrow' }),
+            );
           return h(
             'div',
             { className: 'pd-root' },
             h('style', { dangerouslySetInnerHTML: { __html: CSS } }),
             h('div', { className: 'pd-title' }, t('title')),
-            h('div', { className: 'pd-empty' }, '...'),
+            h(
+              'div',
+              { className: 'pd-skel' },
+              h(
+                'div',
+                { className: 'pd-skel-head' },
+                h('span', { className: 'pd-spin' }),
+                h('span', null, t('loading')),
+              ),
+              // 六行足够占住位置，也不至于让人以为列表已经出来了。
+              [0, 1, 2, 3, 4, 5].map((index) => skeleton('s' + index)),
+            ),
+            error === null
+              ? null
+              : h(
+                  'div',
+                  { className: 'pd-skel-error' },
+                  h('span', null, error),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pd-btn pd-btn-sm',
+                      onClick: () => load(),
+                    },
+                    t('refresh'),
+                  ),
+                ),
           );
         }
 

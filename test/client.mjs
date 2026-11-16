@@ -146,6 +146,13 @@ check(CSS.includes('.pd-src-warn'), 'the out-of-range tag style exists')
 check(CSS.includes('.pd-update-row-busy'), 'a row the host is updating has its own style')
 check(CSS.includes('.pd-update-busy'), 'the per-row spinner is styled')
 check(CSS.includes('.pd-spin-live'), 'the row actually being installed has its own spinner colour')
+check(CSS.includes('.pd-skel-row'), 'the first load shows a skeleton, not three dots')
+check(CSS.includes('.pd-skel-bar'), 'the skeleton rows carry placeholder bars')
+{
+  const panel = readFileSync(join('src','client','panel.js'), 'utf8')
+  check(panel.includes('pd-skel'), 'the loading branch renders the skeleton')
+  check(!panel.includes("className: 'pd-empty' }, '...'"), 'the bare ellipsis is gone')
+}
 {
   const panel = readFileSync(join('src','client','panel.js'), 'utf8')
   check(panel.includes('job.installing'), 'the update badge follows the current round')

@@ -865,6 +865,17 @@ function jobPhaseKey(phase) {
       '.pd-version{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);flex:none}',
       '.pd-name-act{flex:none;display:flex;align-items:center;align-self:center;margin-left:2px}',
       '.pd-upbtn-spin{flex:none;margin-right:1px}',
+      '.pd-skel{display:flex;flex-direction:column;gap:8px;padding:4px 0}',
+      '.pd-skel-head{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}',
+      '.pd-skel-row{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px}',
+      '.pd-skel-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--dsw-alias-border-l4)}',
+      '.pd-skel-bar{height:11px;border-radius:6px;background:var(--dsw-alias-interactive-bg-hover);',
+      'animation:pd-skel-pulse 1.4s ease-in-out infinite}',
+      '.pd-skel-bar-wide{flex:1;max-width:340px}',
+      '.pd-skel-bar-narrow{width:72px;flex:none;margin-left:auto}',
+      '@keyframes pd-skel-pulse{0%,100%{opacity:.45}50%{opacity:.9}}',
+      '.pd-skel-error{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:13px;',
+      'color:var(--dsw-alias-state-error-primary)}',
       '.pd-spin-live{border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
       '.pd-upbtn-open{text-decoration:none}',
       '.pd-src{flex:none;font-size:10px;line-height:16px;padding:0 6px;border-radius:6px;white-space:nowrap;',
@@ -1816,12 +1827,50 @@ function jobPhaseKey(phase) {
         }
 
         if (data === null) {
+          // 第一份 /state 要遍历两百多行 manifest，实测一秒多。以前这里只有一个
+          // 孤零零的 `...`，看起来就是「卡住了」——换成骨架屏，至少让人知道它在
+          // 读，而且读的东西长什么样。
+          const skeleton = (key) =>
+            h(
+              'div',
+              { key: key, className: 'pd-skel-row' },
+              h('span', { className: 'pd-skel-dot' }),
+              h('span', { className: 'pd-skel-bar pd-skel-bar-wide' }),
+              h('span', { className: 'pd-skel-bar pd-skel-bar-narrow' }),
+            );
           return h(
             'div',
             { className: 'pd-root' },
             h('style', { dangerouslySetInnerHTML: { __html: CSS } }),
             h('div', { className: 'pd-title' }, t('title')),
-            h('div', { className: 'pd-empty' }, '...'),
+            h(
+              'div',
+              { className: 'pd-skel' },
+              h(
+                'div',
+                { className: 'pd-skel-head' },
+                h('span', { className: 'pd-spin' }),
+                h('span', null, t('loading')),
+              ),
+              // 六行足够占住位置，也不至于让人以为列表已经出来了。
+              [0, 1, 2, 3, 4, 5].map((index) => skeleton('s' + index)),
+            ),
+            error === null
+              ? null
+              : h(
+                  'div',
+                  { className: 'pd-skel-error' },
+                  h('span', null, error),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pd-btn pd-btn-sm',
+                      onClick: () => load(),
+                    },
+                    t('refresh'),
+                  ),
+                ),
           );
         }
 
