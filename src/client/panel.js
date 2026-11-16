@@ -540,6 +540,28 @@
           [updatesBusy, extrasBusy, load, checkUpdates, checkExtras, t],
         );
 
+        // 同一时间只能有一个 pnpm 在跑（同一个目录里并发装包会互相踩），所以
+        // 「一次装一个」是硬约束。挡人的方式改成排队：点第二个不报错、不装作
+        // 没看见，记下来等前一个跑完自动发车。
+        const enqueueUpdate = React.useCallback(
+          (name) => {
+            const clean = typeof name === 'string' ? name : '';
+            if (clean === '') return;
+            setQueued((prev) => (prev.indexOf(clean) >= 0 ? prev : [...prev, clean]));
+            setToast({ kind: 'ok', text: t('updateQueued') + ' · ' + clean });
+          },
+          [t],
+        );
+
+        React.useEffect(() => {
+          if (queued.length === 0) return;
+          if (busy || job !== null && job.running === true) return;
+          if (updatesBusy !== '' || extrasBusy !== '') return;
+          const next = queued[0];
+          setQueued((prev) => prev.slice(1));
+          applyUpdates([next]);
+        }, [queued, busy, job, updatesBusy, extrasBusy, applyUpdates]);
+
         // 「可卸载」名单由宿主给：只有 removable === true 且真挂在 profile 上的包才在里面。
         // 核心组件和面板自己会被服务端直接挡掉，这里只是决定要不要显示按钮。
         const checkRemovable = React.useCallback(async () => {
@@ -746,6 +768,9 @@
 
         const bulkRun = data && data.bulk && data.bulk.running === true ? data.bulk : null;
         const running = bulkRun !== null;
+        // 后台更新任务是否在跑。跟上面的 running（批量启用/禁用的轮次）不是
+        // 一回事：那两个按钮各管各的，混用会让一边的状态锁住另一边。
+        const jobRunning = job !== null && job.running === true;
         const settled = data && data.bulk && data.bulk.running === false ? data.bulk : null;
 
         // Poll only while the Host says it is working. `bulkJob` marks that a run
@@ -1241,8 +1266,9 @@
                       t('updateOutOfRange'),
                     );
                   }
+                  const inQueue = queued.indexOf(row.name) >= 0;
                   const parts = [
-                    updating ? h('span', { key: 'spin', className: 'pd-spin pd-upbtn-spin' }) : null,
+                    updating || inQueue ? h('span', { key: 'spin', className: 'pd-spin pd-upbtn-spin' }) : null,
                     'v' + (row.version ?? '?'),
                     h('span', { key: 'arrow', className: 'pd-upbtn-arrow' }, '➡'),
                     info.label,
@@ -1250,15 +1276,19 @@
                   ];
                   const label =
                     t('updateNow') + '（' + info.source + '）：v' + (row.version ?? '?') + ' → ' + info.label;
+                  const mustQueue = busy || jobRunning || updatesBusy !== '' || extrasBusy !== '';
                   return h(
                     'button',
                     {
                       type: 'button',
-                      className: 'pd-upbtn',
-                      disabled: busy || updating || pending[row.entryId] === true,
-                      title: label,
+                      className: 'pd-upbtn' + (inQueue ? ' pd-upbtn-queued' : ''),
+                      // 只有这一行自己在装、或它已经在队列里时才禁用。别的行照旧
+                      // 可点：点了进队列，而不是被一起灰掉。
+                      disabled: updating || pending[row.entryId] === true || inQueue,
+                      title: mustQueue ? label + '\n' + t('queueHint') : label,
                       onClick: () => {
-                        applyOne(row, info);
+                        if (mustQueue) enqueueUpdate(row.name);
+                        else applyOne(row, info);
                       },
                     },
                     parts,
@@ -1829,7 +1859,7 @@
             // 这一页列出所有插件，而不是只列「有新版」的那几个：勾选是设置在
             // 先，装包在后，用户得能看到完整名单才能决定谁参与一键更新。
             const rows = (Array.isArray(data.rows) ? data.rows : []).filter(
-              (row) => row.manageable === true && row.self !== true,
+              (row) => row.manageable === true && row.self !== true && isPlugin(row),
             );
             const known = new Set(rows.map((row) => row.name));
             // extras 里那些在状态列表里找不到的包（少数只在 package.json 里留
@@ -2044,15 +2074,20 @@
               h('span', { className: 'pd-sep' }),
               // 主列表也放一个一键更新：看了这一页发现该升级的，不用切标签、
               // 不用重新勾选。它只装「勾上 + 有新版」的那些，和更新页同一个口径。
-              updateCandidates.length === 0
+              tab === 'updates' || updatableTotal(updates, extras) === 0
                 ? null
                 : h(
                     'button',
                     {
                       type: 'button',
                       className: 'pd-btn pd-btn-primary',
-                      disabled: busy || running || updatesBusy !== '',
-                      title: t('updateAll') + '：' + updateCandidates.join(', '),
+                      // 有新版但一个都没勾时按钮留着、灰着——按钮凭空消失会让人
+                      // 以为功能没做，灰着并说明原因才知道要去更新页打勾。
+                      disabled: busy || running || jobRunning || updatesBusy !== '' || updateCandidates.length === 0,
+                      title:
+                        updateCandidates.length === 0
+                          ? t('pickHint')
+                          : t('updateAll') + '：' + updateCandidates.join(', '),
                       onClick: () => applyUpdates(updateCandidates),
                     },
                     t('updateAll') + ' (' + updateCandidates.length + ')',
@@ -2091,12 +2126,24 @@
                         { className: 'pd-jobbar-cancel', type: 'button', onClick: cancelJob },
                         t('jobCancel'),
                       ),
+                  queued.length === 0
+                    ? null
+                    : h(
+                        'span',
+                        { className: 'pd-jobbar-queue' },
+                        t('queuedNote', { n: String(queued.length) }) + ' · ' + queued.join(', '),
+                      ),
                 )
               : queued.length > 0
                 ? h(
                     'div',
                     { className: 'pd-jobbar' },
-                    h('span', null, t('jobQueued', { n: String(queued.length) })),
+                    h('span', null, t('queuedNote', { n: String(queued.length) }) + ' · ' + queued.join(', ')),
+                    h(
+                      'button',
+                      { type: 'button', className: 'pd-jobbar-cancel', onClick: () => setQueued([]) },
+                      t('queueClear'),
+                    ),
                   )
                 : null,
           ),

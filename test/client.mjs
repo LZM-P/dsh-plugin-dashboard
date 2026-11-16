@@ -214,6 +214,12 @@ check(CSS.includes('.pd-tag-warn'), 'the switched-off tag reuses the warn tag st
   check(panel.includes('updateOf.has(row.name) && isAuto(row)'), 'the group one-click button ignores unticked rows')
   check(!panel.includes('setPicked'), 'no separate transient selection any more')
   check(panel.includes("t('upToDate')"), 'a row with nothing to install says so')
+  check(panel.includes('row.self !== true && isPlugin(row)'), 'the update page lists installed plugins, not core packages')
+  check(panel.includes('const enqueueUpdate = React.useCallback'), 'a second update is queued instead of refused')
+  check(panel.includes('prev.indexOf(clean) >= 0 ? prev : [...prev, clean]'), 'the queue never holds the same package twice')
+  check(panel.includes('applyUpdates([next]);'), 'the queue drains through the same update path')
+  check(panel.includes("t('queueHint')"), 'the pill explains that it will queue')
+  check(panel.includes('const jobRunning = job !== null'), 'the update job flag is separate from the bulk flag')
 }
 // ── the generated file is in sync with its parts ─────────────────────────────
 const build = spawnSync(process.execPath, ['scripts/build-client.mjs', '--check'], { encoding: 'utf8' })
