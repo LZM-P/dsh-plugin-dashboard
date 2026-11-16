@@ -271,11 +271,20 @@
           }
         }, [expanded, details, data, fetchDetail]);
 
+        // 两份名单，两件事：
+        //   roster       —— 「自动/手动」，一键开启/关闭作用的范围
+        //   updateRoster —— 「参与一键更新」，更新页的勾选
+        // 以前它们共用一份，于是在更新页勾一下，主列表的自动/手动徽章也跟着变，
+        // 而这两个意思本来就不一样。
         const roster = data && Array.isArray(data.roster) ? data.roster : [];
+        const updateRoster =
+          data && Array.isArray(data.updateRoster)
+            ? data.updateRoster
+            : // 老宿主没有这份名单：退回共用 roster 的旧行为，总比全空好。
+              roster;
         const isAuto = (row) => row.patchId !== null && roster.indexOf(row.patchId) >= 0;
+        const isWatched = (row) => row.patchId !== null && updateRoster.indexOf(row.patchId) >= 0;
         // /updates 的行只带包名，名单按 patchId 存，中间得有一张对照表。
-        // 拿不到对照的（github 压缩包、本地 tgz 这类只在 extras 里出现的包）
-        // 一律当成自动：查不到就说"不清楚"，不能悄悄把它们从一键更新里删掉。
         const patchIdOf = new Map();
         if (data !== null && Array.isArray(data.rows)) {
           for (const row of data.rows) {
@@ -284,9 +293,9 @@
             }
           }
         }
-        const inAuto = (name) => {
+        const inWatched = (name) => {
           const id = patchIdOf.get(name);
-          return id === undefined ? true : roster.indexOf(id) >= 0;
+          return id === undefined ? true : updateRoster.indexOf(id) >= 0;
         };
 
         const run = React.useCallback(
@@ -726,6 +735,15 @@
             row.name,
             null,
             () => request('/plugin', { entryId: row.entryId, auto }),
+            row.entryId,
+          );
+
+        // 更新页的勾选：走 /plugin 的 update 字段，不动 auto。
+        const setWatched = (row, update) =>
+          run(
+            row.name,
+            null,
+            () => request('/plugin', { entryId: row.entryId, update }),
             row.entryId,
           );
 
@@ -1546,7 +1564,7 @@
           // 组装好了，这里只做一次筛选，不重复判断范围。和一键开关一样，只有
           // 自动名单里的行才算数——手动行必须留给用户自己点。
           const updatableHere = current.rows
-            .filter((row) => row.manageable && updateOf.has(row.name) && isAuto(row))
+            .filter((row) => row.manageable && updateOf.has(row.name) && isWatched(row))
             .map((row) => row.name);
           return h(
             'div',
@@ -1682,13 +1700,13 @@
         const updateCandidates = (() => {
           const names = new Set();
           for (const row of data !== null && Array.isArray(data.rows) ? data.rows : []) {
-            if (row.manageable && row.self !== true && isAuto(row) && updateOf.has(row.name)) {
+            if (row.manageable && row.self !== true && isWatched(row) && updateOf.has(row.name)) {
               names.add(row.name);
             }
           }
           if (extras !== null && Array.isArray(extras.rows)) {
             for (const row of extras.rows) {
-              if (row.hasUpdate === true && typeof row.name === 'string' && inAuto(row.name)) {
+              if (row.hasUpdate === true && typeof row.name === 'string' && inWatched(row.name)) {
                 names.add(row.name);
               }
             }
@@ -1707,7 +1725,7 @@
           const inRound = busyNow && roundRow(row.name);
           const info = updateBy.get(row.name) || null;
           const fresh = info !== null || (extra !== null && extra.hasUpdate === true);
-          const on = isAuto(row);
+          const on = isWatched(row);
           const spec = info !== null ? info.spec : null;
           const kind = info !== null ? info.kind : null;
           const from = info !== null ? info.source : extra !== null ? String(extra.source || '') : '';
@@ -1726,7 +1744,8 @@
               className: 'pd-check',
               checked: on,
               disabled: updatesBusy !== '' || busyNow,
-              onChange: () => setAuto(row, !on),
+              // 只动「参与一键更新」，绝不碰自动/手动。
+              onChange: () => setWatched(row, !on),
             }),
             h(
               'span',
@@ -1909,7 +1928,7 @@
             if (rows.length === 0 && orphans.length === 0) {
               return h('div', { className: 'pd-empty' }, t('updateNone'));
             }
-            const ticked = rows.filter((row) => isAuto(row)).length;
+            const ticked = rows.filter((row) => isWatched(row)).length;
             return [
               h(
                 'div',
@@ -1953,7 +1972,7 @@
                 h(
                   'label',
                   { key: row.name, className: 'pd-update-row pd-update-row-off' },
-                  h('input', { type: 'checkbox', className: 'pd-check', checked: inAuto(row.name), disabled: true }),
+                  h('input', { type: 'checkbox', className: 'pd-check', checked: inWatched(row.name), disabled: true }),
                   h(
                     'span',
                     { className: 'pd-update-main' },
@@ -2160,26 +2179,8 @@
                 ),
               ),
               h('span', { className: 'pd-sep' }),
-              // 主列表也放一个一键更新：看了这一页发现该升级的，不用切标签、
-              // 不用重新勾选。它只装「勾上 + 有新版」的那些，和更新页同一个口径。
-              tab === 'updates' || updatableTotal(updates, extras) === 0
-                ? null
-                : h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'pd-btn pd-btn-primary',
-                      // 有新版但一个都没勾时按钮留着、灰着——按钮凭空消失会让人
-                      // 以为功能没做，灰着并说明原因才知道要去更新页打勾。
-                      disabled: busy || running || jobRunning || updatesBusy !== '' || updateCandidates.length === 0,
-                      title:
-                        updateCandidates.length === 0
-                          ? t('pickHint')
-                          : t('updateAll') + '：' + updateCandidates.join(', '),
-                      onClick: () => applyUpdates(updateCandidates),
-                    },
-                    t('updateAll') + ' (' + updateCandidates.length + ')',
-                  ),
+              // 顶栏不再放「全部更新」：它和「一键全部开启/关闭」并排时太容易
+              // 点错，而且主列表的组标题栏里已经有一个了。
               h('button', { type: 'button', className: 'pd-btn', disabled: busy, onClick: load }, t('refresh')),
               busy
                 ? h(

@@ -410,7 +410,10 @@ function jobStatus() {
 function emptyRoster() {
   // `removed` 是「用户亲手取消过」的名单。没有它就无法区分「还没决定」和
   // 「决定不要」——每次刷新把没勾的补回来，用户就永远取消不掉勾选。
-  return { version: 1, seeded: false, auto: [], removed: [], created: [] }
+  // `auto`    = 「自动/手动」：一键开启/关闭作用的名单
+  // `update`  = 「参与一键更新」：更新页的勾选，和上面那份没有关系
+  // 两份分开是因为它们是两件事：想让它参加批量开关，不等于想让它被自动升级。
+  return { version: 1, seeded: false, auto: [], update: [], removed: [], created: [] }
 }
 
 function loadRoster() {
@@ -444,6 +447,7 @@ function roster() {
     const loaded = loadRoster()
     rosterState = loaded.state
     if (!Array.isArray(rosterState.removed)) rosterState.removed = []
+    if (!Array.isArray(rosterState.update)) rosterState.update = []
     storageMode = loaded.storage
   }
   return rosterState
@@ -1052,12 +1056,22 @@ async function readRows(ctx) {
  * must not come back on the next refresh.
  */
 function catchUpRoster(state, installed) {
-  const auto = Array.isArray(state.auto) ? state.auto.slice() : []
-  const removed = new Set(Array.isArray(state.removed) ? state.removed : [])
-  const missing = installed.filter(id => id !== null && !auto.includes(id) && !removed.has(id))
+  // 两份名单都要补全，但各自有各自的「用户亲手取消过」的记录。
+  const grow = (current, blocked, picked) => {
+    const list = Array.isArray(current) ? current.slice() : []
+    const skip = new Set(Array.isArray(blocked) ? blocked : [])
+    const missing = picked.filter(id => id !== null && !list.includes(id) && !skip.has(id))
+    return missing.length === 0 ? list : [...list, ...missing]
+  }
+  const auto = grow(state.auto, state.removed, installed)
+  const update = grow(state.update, state.removedUpdate, installed)
   return {
-    auto: missing.length > 0 ? [...auto, ...missing] : auto,
-    changed: state.seeded !== true || missing.length > 0,
+    auto,
+    update,
+    changed:
+      state.seeded !== true ||
+      auto.length !== (Array.isArray(state.auto) ? state.auto.length : 0) ||
+      update.length !== (Array.isArray(state.update) ? state.update.length : 0),
   }
 }
 
@@ -1069,18 +1083,28 @@ async function snapshot(ctx) {
   const gathered = catchUpRoster(state, installedRoster(rows))
   if (gathered.changed) {
     state.auto = gathered.auto
+    state.update = gathered.update
     state.seeded = true
     persistRoster()
   }
 
   // Drop roster entries whose row disappeared, so the count always matches.
   const known = new Set(rows.filter(row => row.manageable).map(row => row.patchId))
-  const pruned = state.auto.filter(id => known.has(id))
-  const keptRemoved = (Array.isArray(state.removed) ? state.removed : []).filter(id => known.has(id))
-  const removedChanged = keptRemoved.length !== (Array.isArray(state.removed) ? state.removed.length : 0)
-  if (pruned.length !== state.auto.length || removedChanged) {
-    state.auto = pruned
-    state.removed = keptRemoved
+  const prune = (list) => (Array.isArray(list) ? list.filter(id => known.has(id)) : [])
+  const nextAuto = prune(state.auto)
+  const nextUpdate = prune(state.update)
+  const nextRemoved = prune(state.removed)
+  const nextRemovedUpdate = prune(state.removedUpdate)
+  const shrunk =
+    nextAuto.length !== (Array.isArray(state.auto) ? state.auto.length : 0) ||
+    nextUpdate.length !== (Array.isArray(state.update) ? state.update.length : 0) ||
+    nextRemoved.length !== (Array.isArray(state.removed) ? state.removed.length : 0) ||
+    nextRemovedUpdate.length !== (Array.isArray(state.removedUpdate) ? state.removedUpdate.length : 0)
+  if (shrunk) {
+    state.auto = nextAuto
+    state.update = nextUpdate
+    state.removed = nextRemoved
+    state.removedUpdate = nextRemovedUpdate
     persistRoster()
   }
 
@@ -1090,7 +1114,9 @@ async function snapshot(ctx) {
     rows,
 
     roster: state.auto.slice(),
-    supports: { rosterNames: true },
+    // 「参与一键更新」是另一份名单，别再让两件事共用一个字段。
+    updateRoster: (Array.isArray(state.update) ? state.update : []).slice(),
+    supports: { rosterNames: true, splitUpdateRoster: true },
     storage: storageMode,
     statePath: stateFile(),
     bulk: bulkSnapshot(),
@@ -1211,6 +1237,26 @@ async function actPlugin(ctx, body) {
   let result
   if (typeof body.enabled === 'boolean') {
     result = await setOne(ctx, entryId, body.enabled, row)
+  }
+
+  // 「参与一键更新」是独立的一份名单：更新页的勾选只动它，不再牵动自动/手动。
+  if (typeof body.update === 'boolean') {
+    const state = roster()
+    const list = Array.isArray(state.update) ? state.update : []
+    const blocked = Array.isArray(state.removedUpdate) ? state.removedUpdate : []
+    if (row.patchId === null) {
+      result = { entryId, ok: false, message: 'row cannot join the update roster (read-only)' }
+    } else if (body.update) {
+      if (!list.includes(row.patchId)) state.update = [...list, row.patchId]
+      state.removedUpdate = blocked.filter(id => id !== row.patchId)
+      persistRoster()
+      result = result ?? { entryId, ok: true, application: 'applied' }
+    } else {
+      state.update = list.filter(id => id !== row.patchId)
+      state.removedUpdate = blocked.includes(row.patchId) ? blocked : [...blocked, row.patchId]
+      persistRoster()
+      result = result ?? { entryId, ok: true, application: 'applied' }
+    }
   }
 
   if (typeof body.auto === 'boolean') {
@@ -1613,17 +1659,37 @@ async function actRoster(ctx, mode, scope, auto) {
     ? rows.filter(row => inScope(row, scope))
     : rows.filter(row => Array.isArray(scope) && scope.includes(row.name))
   const wanted = new Set(pick.map(row => row.patchId).filter(id => id !== null))
-  const removed = new Set(Array.isArray(state.removed) ? state.removed : [])
-  if (auto === true) {
-    for (const id of wanted) {
-      if (!state.auto.includes(id)) state.auto.push(id)
-      removed.delete(id)
+  if (mode === 'names') {
+    // 按名单批量勾选只服务更新页 —— 它改的是「参与一键更新」，不是自动/手动。
+    const list = Array.isArray(state.update) ? state.update.slice() : []
+    const blocked = new Set(Array.isArray(state.removedUpdate) ? state.removedUpdate : [])
+    if (auto === true) {
+      for (const id of wanted) {
+        if (!list.includes(id)) list.push(id)
+        blocked.delete(id)
+      }
+    } else {
+      for (const id of wanted) {
+        const at = list.indexOf(id)
+        if (at >= 0) list.splice(at, 1)
+        blocked.add(id)
+      }
     }
+    state.update = list
+    state.removedUpdate = [...blocked]
   } else {
-    state.auto = state.auto.filter(id => !wanted.has(id))
-    for (const id of wanted) removed.add(id)
+    const removed = new Set(Array.isArray(state.removed) ? state.removed : [])
+    if (auto === true) {
+      for (const id of wanted) {
+        if (!state.auto.includes(id)) state.auto.push(id)
+        removed.delete(id)
+      }
+    } else {
+      state.auto = state.auto.filter(id => !wanted.has(id))
+      for (const id of wanted) removed.add(id)
+    }
+    state.removed = [...removed]
   }
-  state.removed = [...removed]
   state.seeded = true
   persistRoster()
   return await snapshot(ctx)
