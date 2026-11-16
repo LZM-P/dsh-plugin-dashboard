@@ -1383,9 +1383,13 @@ function jobPhaseKey(phase) {
           }
         }, [updatesBusy, t]);
 
-        const applyUpdates = React.useCallback(async () => {
+        const applyUpdates = React.useCallback(async (explicitNames) => {
           if (updatesBusy !== '') return;
-          const names = Object.keys(picked).filter((name) => picked[name] === true);
+          // 组标题栏那个「一键更新」不在更新页里，勾选集可能是空的或者过期的，
+          // 所以允许调用方直接把要装的名单递进来，而不是只认 picked。
+          const names = Array.isArray(explicitNames)
+            ? explicitNames
+            : Object.keys(picked).filter((name) => picked[name] === true);
           if (names.length === 0) return;
           setUpdatesBusy('apply');
           setUpdateLog(null);
@@ -2471,6 +2475,11 @@ function jobPhaseKey(phase) {
           const autoInScope = current.rows.filter(
             (row) => row.manageable && isAuto(row) && !row.self,
           ).length;
+          // 这一页里当前可以更新的包。updateOf 已经按「有新版且落在版本范围内」
+          // 组装好了，这里只做一次筛选，不重复判断范围。
+          const updatableHere = current.rows
+            .filter((row) => row.manageable && updateOf.has(row.name))
+            .map((row) => row.name);
           return h(
             'div',
             { className: 'pd-group', key: group.key },
@@ -2562,6 +2571,21 @@ function jobPhaseKey(phase) {
                   },
                   t('markNoneAuto'),
                 ),
+                // 这一页有可更新的包时，就地给一个一键更新：不用切到更新页、
+                // 不用重新勾选，只装这一页里真正有新版的那些。
+                updatableHere.length === 0
+                  ? null
+                  : h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'pd-btn pd-btn-sm pd-btn-primary',
+                        disabled: busy || running || updatesBusy !== '',
+                        title: t('updateAll') + '：' + updatableHere.join(', '),
+                        onClick: () => applyUpdates(updatableHere),
+                      },
+                      t('updateAll') + ' (' + updatableHere.length + ')',
+                    ),
                     ),
                     h('span', { className: 'pd-colhead-label' }, t('colPower')),
                     h('span', { className: 'pd-colhead-label' }, t('colMode')),
@@ -2708,7 +2732,9 @@ function jobPhaseKey(phase) {
                 type: 'button',
                 className: 'pd-btn pd-btn-primary',
                 disabled: updatesBusy !== '' || pickedNames.length === 0,
-                onClick: applyUpdates,
+                // 不传参：applyUpdates(undefined) 才算「按勾选集来」。
+                // 直接把函数交给 onClick 会把 MouseEvent 当成名单递进去。
+                onClick: () => applyUpdates(),
               },
               t('updateAll') + (pickedNames.length > 0 ? ' (' + pickedNames.length + ')' : ''),
             ),
