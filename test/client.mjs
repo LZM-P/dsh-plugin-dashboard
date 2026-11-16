@@ -146,19 +146,17 @@ check(CSS.includes('.pd-src-warn'), 'the out-of-range tag style exists')
 check(CSS.includes('.pd-update-row-busy'), 'a row the host is updating has its own style')
 check(CSS.includes('.pd-update-busy'), 'the per-row spinner is styled')
 check(CSS.includes('.pd-spin-live'), 'the row actually being installed has its own spinner colour')
-check(CSS.includes('.pd-skel-row'), 'the first load shows a skeleton, not three dots')
 {
   const panel = readFileSync(join('src','client','panel.js'), 'utf8')
   check(panel.includes('SNAPSHOT_KEY'), 'the last snapshot is cached for the next open')
+  check(!panel.includes('pd-skel-row'), 'no skeleton rows are rendered any more')
+  check(!panel.includes('slowLoad'), 'no slow-load timer any more')
   check(panel.includes('Array.isArray(parsed.rows)'), 'a malformed cache is ignored')
   check(CSS.includes('.pd-inner'), 'the loading state keeps the same padding as the real view')
   check(panel.includes("className: 'pd-inner'"), 'the skeleton is inside the padded container')
 }
-check(CSS.includes('.pd-skel-bar'), 'the skeleton rows carry placeholder bars')
 {
   const panel = readFileSync(join('src','client','panel.js'), 'utf8')
-  check(panel.includes('pd-skel'), 'the loading branch renders the skeleton')
-  check(panel.includes('slowLoad'), 'a slow first load says so instead of spinning forever')
   check(!panel.includes("className: 'pd-empty' }, '...'"), 'the bare ellipsis is gone')
 }
 {

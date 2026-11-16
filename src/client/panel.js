@@ -149,9 +149,6 @@
 
         const [data, setData] = React.useState(null);
         const [error, setError] = React.useState(null);
-        // 第一份快照要读两百多行 manifest（实测一秒出头）。骨架屏本身分不出
-        // 「还在读」和「卡住了」，所以超过这个时限就把话说清楚。
-        const [slowLoad, setSlowLoad] = React.useState(false);
         const [busy, setBusy] = React.useState(false);
         const [pending, setPending] = React.useState({});
         const [bulkJob, setBulkRun] = React.useState(null);
@@ -259,17 +256,6 @@
           }
           load();
         }, [load]);
-
-        // 只有「还没有第一份数据」时才需要这个计时器：之后的刷新有自己的
-        // 进度提示，盯着这里的慢加载只会误报。
-        React.useEffect(() => {
-          if (data !== null) {
-            setSlowLoad(false);
-            return undefined;
-          }
-          const timer = setTimeout(() => setSlowLoad(true), 4000);
-          return () => clearTimeout(timer);
-        }, [data]);
 
         // load() 清掉了详情缓存，把仍然展开着的行重新取一遍，别让它们停在空白上。
         // 依赖里带上 details，是为了在“缓存被清空”的那一次渲染后立刻补回来。
@@ -862,54 +848,32 @@
         }
 
         if (data === null) {
-          // 第一份 /state 要遍历两百多行 manifest，实测一秒多。以前这里只有一个
-          // 孤零零的 `...`，看起来就是「卡住了」——换成骨架屏，至少让人知道它在
-          // 读，而且读的东西长什么样。
-          const skeleton = (key) =>
-            h(
-              'div',
-              { key: key, className: 'pd-skel-row' },
-              h('span', { className: 'pd-skel-dot' }),
-              h('span', { className: 'pd-skel-bar pd-skel-bar-wide' }),
-              h('span', { className: 'pd-skel-bar pd-skel-bar-narrow' }),
-            );
+          // 首屏不放占位：上一次的快照会先画出来（见上面的 SNAPSHOT_KEY），
+          // 真的什么都没有时就是空着，比一个会闪一下的骨架屏干净。
+          // 只有取数失败才需要说话——那时候用户得知道为什么是空的。
+          if (error === null) return null;
           return h(
             'div',
             { className: 'pd-root' },
             h('style', { dangerouslySetInnerHTML: { __html: CSS } }),
-            // 同样的 .pd-inner 缩进：加载态漏了它，标题会贴着容器左边被切掉一块。
             h(
               'div',
               { className: 'pd-inner' },
               h('div', { className: 'pd-title' }, t('title')),
               h(
                 'div',
-                { className: 'pd-skel' },
+                { className: 'pd-skel-error' },
+                h('span', null, error),
                 h(
-                  'div',
-                  { className: 'pd-skel-head' },
-                  h('span', { className: 'pd-spin' }),
-                  h('span', null, slowLoad ? t('loadingSlow') : t('loading')),
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'pd-btn pd-btn-sm',
+                    onClick: () => load(),
+                  },
+                  t('refresh'),
                 ),
-                // 六行足够占住位置，也不至于让人以为列表已经出来了。
-                [0, 1, 2, 3, 4, 5].map((index) => skeleton('s' + index)),
               ),
-              error === null
-                ? null
-                : h(
-                    'div',
-                    { className: 'pd-skel-error' },
-                    h('span', null, error),
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'pd-btn pd-btn-sm',
-                        onClick: () => load(),
-                      },
-                      t('refresh'),
-                    ),
-                  ),
             ),
           );
         }
