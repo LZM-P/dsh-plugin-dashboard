@@ -185,7 +185,21 @@ function fakePnpm({ bad = [], blame = true, onCall = () => {} } = {}) {
   check(!result.failed.some(one => names.has(one.name)), 'installed and failed never overlap')
 }
 
-// 10. Every call carries a usable timeout.
+// 10. Each round announces the packages it is handing to pnpm.
+{
+  const { install } = fakePnpm({ bad: ['pkg-b'] });
+  const rounds = [];
+  await installWithFallback({
+    items: [item('pkg-a', '2'), item('pkg-b', '2'), item('pkg-c', '2')],
+    install,
+    onRound: names => rounds.push(names.slice()),
+  });
+  check(rounds.length === 2, 'each pnpm run announces its batch'),
+  check(rounds[0].join() === 'pkg-a,pkg-b,pkg-c', 'the first round names the whole batch'),
+  check(rounds[1].join() === 'pkg-a,pkg-c', 'the retry names only what is left');
+}
+
+// 11. Every call carries a usable timeout.
 {
   const { install, calls } = fakePnpm({ bad: ['pkg-b'] })
   await installWithFallback({

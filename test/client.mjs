@@ -145,6 +145,11 @@ check(CSS.includes('.pd-row-uninstall'), 'the uninstall control style exists')
 check(CSS.includes('.pd-src-warn'), 'the out-of-range tag style exists')
 check(CSS.includes('.pd-update-row-busy'), 'a row the host is updating has its own style')
 check(CSS.includes('.pd-update-busy'), 'the per-row spinner is styled')
+check(CSS.includes('.pd-spin-live'), 'the row actually being installed has its own spinner colour')
+{
+  const panel = readFileSync(join('src','client','panel.js'), 'utf8')
+  check(panel.includes('job.installing'), 'the update badge follows the current round')
+}
 check(CSS.includes('.pd-tag-warn'), 'the switched-off tag reuses the warn tag style')
 {
   for (const [locale, dict] of Object.entries(DICT)) {

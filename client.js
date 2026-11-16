@@ -865,6 +865,7 @@ function jobPhaseKey(phase) {
       '.pd-version{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);flex:none}',
       '.pd-name-act{flex:none;display:flex;align-items:center;align-self:center;margin-left:2px}',
       '.pd-upbtn-spin{flex:none;margin-right:1px}',
+      '.pd-spin-live{border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
       '.pd-upbtn-open{text-decoration:none}',
       '.pd-src{flex:none;font-size:10px;line-height:16px;padding:0 6px;border-radius:6px;white-space:nowrap;',
       'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary)}',
@@ -2153,7 +2154,12 @@ function jobPhaseKey(phase) {
                   const badge = badgeOf(info, srcOf.get(row.name));
                   if (badge.kind === 'none') return null;
                   if (badge.kind === 'src') return h('span', { className: 'pd-src' }, badge.label);
-                  const updating = pending['update:' + row.entryId] === true;
+                  const updating =
+                    pending['update:' + row.entryId] === true ||
+                    (job !== null &&
+                      job.running === true &&
+                      Array.isArray(job.installing) &&
+                      job.installing.indexOf(row.name) >= 0);
                   if (badge.kind === 'outOfRange') {
                     // 有新版、但不在 package.json 声明的范围内：这里不能给按钮，
                     // 点了也不会升，只会让人以为按钮失灵。
@@ -2531,6 +2537,12 @@ function jobPhaseKey(phase) {
             job.running === true &&
             Array.isArray(job.names) &&
             job.names.indexOf(row.name) >= 0;
+          // 这一轮真正在装的几个：跟着轮次走，比整批都转圈有用得多。
+          const inRound =
+            job !== null &&
+            job.running === true &&
+            Array.isArray(job.installing) &&
+            job.installing.indexOf(row.name) >= 0;
           return h(
             'label',
             { key: row.name, className: busyNow ? 'pd-update-row pd-update-row-busy' : 'pd-update-row' },
@@ -2547,7 +2559,7 @@ function jobPhaseKey(phase) {
             typeof row.spec === 'string' && row.kind !== 'exact'
               ? h('code', { className: 'pd-update-spec', title: row.spec }, row.spec)
               : null,
-            busyNow ? h('span', { className: 'pd-spin pd-update-busy', title: t('rowUpdating') }) : null,
+            busyNow ? h('span', { className: 'pd-spin pd-update-busy' + (inRound ? ' pd-spin-live' : ''), title: t('rowUpdating') }) : null,
           );
         };
 

@@ -577,6 +577,7 @@ console.log('switching a bundle layer back on')
   check('save mode writes the composition list too', extract('actBulk').includes('composeBundles(ctx, offlineNames, enabled)'))
   check('composeBundles edits the bundles array', extract('composeBundles').includes('parsed.dsh.profile.bundles'))
   check('the snapshot no longer carries a second copy', !extract('snapshot').includes('offline:'))
+  check('turning one on clears the switched-off mark in place', extract('actPlugin').includes('patched.composed = body.enabled'))
 }
 console.log('rollback is not cancellable')
 {

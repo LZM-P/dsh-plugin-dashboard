@@ -1165,7 +1165,12 @@
                   const badge = badgeOf(info, srcOf.get(row.name));
                   if (badge.kind === 'none') return null;
                   if (badge.kind === 'src') return h('span', { className: 'pd-src' }, badge.label);
-                  const updating = pending['update:' + row.entryId] === true;
+                  const updating =
+                    pending['update:' + row.entryId] === true ||
+                    (job !== null &&
+                      job.running === true &&
+                      Array.isArray(job.installing) &&
+                      job.installing.indexOf(row.name) >= 0);
                   if (badge.kind === 'outOfRange') {
                     // 有新版、但不在 package.json 声明的范围内：这里不能给按钮，
                     // 点了也不会升，只会让人以为按钮失灵。
@@ -1543,6 +1548,12 @@
             job.running === true &&
             Array.isArray(job.names) &&
             job.names.indexOf(row.name) >= 0;
+          // 这一轮真正在装的几个：跟着轮次走，比整批都转圈有用得多。
+          const inRound =
+            job !== null &&
+            job.running === true &&
+            Array.isArray(job.installing) &&
+            job.installing.indexOf(row.name) >= 0;
           return h(
             'label',
             { key: row.name, className: busyNow ? 'pd-update-row pd-update-row-busy' : 'pd-update-row' },
@@ -1559,7 +1570,7 @@
             typeof row.spec === 'string' && row.kind !== 'exact'
               ? h('code', { className: 'pd-update-spec', title: row.spec }, row.spec)
               : null,
-            busyNow ? h('span', { className: 'pd-spin pd-update-busy', title: t('rowUpdating') }) : null,
+            busyNow ? h('span', { className: 'pd-spin pd-update-busy' + (inRound ? ' pd-spin-live' : ''), title: t('rowUpdating') }) : null,
           );
         };
 

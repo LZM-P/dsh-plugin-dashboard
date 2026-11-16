@@ -290,6 +290,9 @@ function beginJob(kind, names) {
     restart: false,
     updated: [],
     failed: [],
+    // 这一轮真正递给 pnpm 的那几个包。批量更新是一轮一轮跑的，面板靠它把
+    // 「正在转」的标记推到当前这一轮的包上，而不是整批都挂着同一个圈。
+    installing: [],
   }
   activeJob = job
   activeJobAbort = new AbortController()
@@ -307,6 +310,8 @@ function endJob(job, result) {
   // failure a moment later.
   if (job.cancelled === true && job.ok !== true) job.message = previousMessage
   job.restart = result !== null && typeof result === 'object' && result.restart === true
+  // 跑完了就没有「正在装」这一说了，留着会让最后一轮的行一直转圈。
+  job.installing = []
   job.updated = result !== null && typeof result === 'object' && Array.isArray(result.updated) ? result.updated : []
   job.failed = result !== null && typeof result === 'object' && Array.isArray(result.failed) ? result.failed : []
   if (activeJob !== null && activeJob.id === job.id) {
@@ -1210,6 +1215,9 @@ async function actPlugin(ctx, body) {
   if (typeof body.enabled === 'boolean') {
     patched.enabled = body.enabled
     patched.phase = body.enabled ? 'active' : null
+    // 未装配的行打开之后就是装配好的行了：不同步这个标记，界面会一边把开关
+    // 拨到「开」，一边继续挂「已关闭」的标签，直到下一次整份状态刷新。
+    if (row.composed === false) patched.composed = body.enabled
   }
   return { ok: true, patch: true, row: patched, roster: roster().auto.slice(), result: settled }
 }
@@ -2322,6 +2330,9 @@ export async function installWithFallback(options) {
   const items = Array.isArray(options.items) ? options.items : []
   const install = options.install
   const cancelled = typeof options.cancelled === 'function' ? options.cancelled : () => false
+  // 每一轮往 pnpm 递哪几个包，都要让调用方知道：批量安装时界面靠它把「正在转」
+  // 的标记跟着轮次推进，而不是从头到尾只有第一行在转。
+  const onRound = typeof options.onRound === 'function' ? options.onRound : () => {}
   const budgetMs = Number.isFinite(options.budgetMs) ? options.budgetMs : BATCH_TIMEOUT
   const maxRounds = Number.isFinite(options.rounds) ? options.rounds : MAX_INSTALL_ROUNDS
   const maxProbes = Number.isFinite(options.probes) ? options.probes : MAX_SINGLE_PROBES
@@ -2342,6 +2353,7 @@ export async function installWithFallback(options) {
     }
     rounds += 1
     const batch = remaining
+    onRound(batch.map(item => item.name))
     const result = await install(batch, budget(BATCH_TIMEOUT))
     output = typeof result?.output === 'string' ? result.output : ''
     if (result?.code === 0) {
@@ -2371,6 +2383,7 @@ export async function installWithFallback(options) {
           stopped = true
           break
         }
+        onRound([item.name])
         const single = await install([item], budget(SINGLE_TIMEOUT))
         if (single?.code === 0) installed.push(item)
         else failed.push({ name: item.name, output: tailOf(typeof single?.output === 'string' ? single.output : '', 1200) })
@@ -2549,6 +2562,13 @@ async function applyUpdates(ctx, names, pinned = null, job = null) {
       items: planned,
       install: installBatch,
       cancelled: () => jobCancelled(job),
+      // 把「这一轮正在装谁」写进任务本身：面板靠 job.installing 让每一行的版本
+      // 徽章跟着轮次转，而不是整批只有一个静态的「9 个插件」。
+      onRound: names => {
+        if (job === null || typeof job !== 'object') return
+        job.installing = Array.isArray(names) ? names.slice() : []
+        persistJob(job)
+      },
     })
   } finally {
     release()

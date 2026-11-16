@@ -128,6 +128,7 @@
       '.pd-version{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);flex:none}',
       '.pd-name-act{flex:none;display:flex;align-items:center;align-self:center;margin-left:2px}',
       '.pd-upbtn-spin{flex:none;margin-right:1px}',
+      '.pd-spin-live{border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
       '.pd-upbtn-open{text-decoration:none}',
       '.pd-src{flex:none;font-size:10px;line-height:16px;padding:0 6px;border-radius:6px;white-space:nowrap;',
       'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary)}',
