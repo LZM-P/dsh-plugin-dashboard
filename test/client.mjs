@@ -210,6 +210,8 @@ check(CSS.includes('.pd-tag-warn'), 'the switched-off tag reuses the warn tag st
   const panel = readFileSync(join('src','client','panel.js'), 'utf8')
   check(panel.includes('const updateCandidates = (() =>'), 'the bulk list is derived, not stored twice')
   check(panel.includes('const updateRoster ='), 'the update roster is a separate list')
+  check(panel.includes('info.hasUpdate === true'), 'a row with nothing to install is not drawn as a version move')
+  check(!panel.includes('pd-update-meta'), 'no empty meta tag is rendered next to the name')
   check(panel.includes('const isWatched = (row)'), 'watching a plugin for updates is not the same as 自动')
   check(panel.includes("entryId: row.entryId, update }"), 'the update roster is written through its own field')
   check(panel.includes('row.manageable && row.self !== true && isWatched(row) && updateOf.has(row.name)'), 'only ticked rows with a newer version are candidates')

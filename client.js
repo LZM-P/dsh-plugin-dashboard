@@ -1002,7 +1002,7 @@ function jobPhaseKey(phase) {
       // 谁跟着一键更新走。
       '.pd-roster{display:flex;flex-direction:column;gap:2px;margin-top:4px}',
       '.pd-install-head{padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}',
-      '.pd-update-row{display:flex;align-items:center;gap:12px;min-height:40px;padding:0 12px;border-radius:9px;',
+      '.pd-update-row{display:flex;align-items:center;gap:12px;min-height:38px;padding:0 12px;border-radius:8px;',
       'cursor:pointer;transition:background .12s ease}',
       '.pd-update-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-update-row-off{opacity:.5}',
@@ -1014,10 +1014,11 @@ function jobPhaseKey(phase) {
       '.pd-update-name{min-width:0;font-size:13px;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
       'color:var(--dsw-alias-label-primary)}',
       '.pd-update-row-on .pd-update-name{font-weight:600}',
-      '.pd-update-meta{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:11px;line-height:16px;',
-      'color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
-      '.pd-update-meta code{font-family:inherit;font-size:10px;line-height:16px;padding:0 5px;border-radius:5px;',
-      'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary)}',
+      '.pd-update-spec{flex:none;font-family:inherit;font-size:10px;line-height:16px;padding:0 5px;border-radius:5px;',
+      'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      '.pd-update-orphan{border-style:dashed}',
+      '.pd-update-src{font-size:10px;line-height:16px;padding:0 5px;border-radius:5px;',
+      'background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary)}',
       '.pd-update-ver{flex:none;display:inline-flex;align-items:baseline;gap:6px;font-size:12px;line-height:18px;',
       'font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
       '.pd-update-ver-idle{color:var(--dsw-alias-label-tertiary);font-size:11px}',
@@ -1027,12 +1028,14 @@ function jobPhaseKey(phase) {
       '.pd-update-busy{flex:none;margin-left:2px;',
       'border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
       // 汇总条：「参与一键更新 12 / 33」+ 全选 / 全不选
-      '.pd-roster-bar{display:flex;align-items:center;gap:10px;padding:10px 12px 6px;flex-wrap:wrap;',
-      'border-bottom:1px solid var(--dsw-alias-border-l2);margin-bottom:4px}',
-      '.pd-roster-count{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);',
+      // 汇总条：一行字 + 右边两个小按钮，底部一条极淡的分隔线。
+      '.pd-roster-bar{display:flex;align-items:center;gap:10px;padding:4px 12px 8px;flex-wrap:wrap;',
+      'border-bottom:1px solid var(--dsw-alias-border-l2);margin:2px 0 6px}',
+      '.pd-roster-count{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);',
       'font-variant-numeric:tabular-nums}',
-      '.pd-roster-count b{color:var(--dsw-alias-label-primary)}',
+      '.pd-roster-count b{font-weight:600;color:var(--dsw-alias-label-primary)}',
       '.pd-roster-act{margin-left:auto;display:inline-flex;gap:6px}',
+      '.pd-roster-act .pd-btn{font-size:11px;line-height:16px;min-height:22px;padding:0 8px}',
       '.pd-check{flex:none;width:15px;height:15px;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}',
       '.pd-update-log{padding:10px 12px;border-radius:9px;font-size:12px;line-height:18px;background:var(--dsw-alias-bg-layer-2)}',
       '.pd-update-log-ok{border:1px solid var(--dsw-alias-state-success-primary)}',
@@ -2768,7 +2771,10 @@ function jobPhaseKey(phase) {
           const busyNow = busyRow(row.name);
           const inRound = busyNow && roundRow(row.name);
           const info = updateBy.get(row.name) || null;
-          const fresh = info !== null || (extra !== null && extra.hasUpdate === true);
+          // info 存在只代表「查过这个包」，不代表它有新版。没有新版的行走
+          // 下面那个 else 分支，显示「已是最新」。
+          const fresh =
+            (info !== null && info.hasUpdate === true) || (extra !== null && extra.hasUpdate === true);
           const on = isWatched(row);
           const spec = info !== null ? info.spec : null;
           const kind = info !== null ? info.kind : null;
@@ -2795,20 +2801,18 @@ function jobPhaseKey(phase) {
               'span',
               { className: 'pd-update-main' },
               h('span', { className: 'pd-update-name' }, row.name),
-              h(
-                'span',
-                { className: 'pd-update-meta' },
-                typeof spec === 'string' && kind !== 'exact' ? h('code', null, spec) : null,
-                from === '' || from === 'npm' ? null : h('span', { className: 'pd-tag' }, from),
-              ),
+              typeof spec === 'string' && kind !== 'exact' ? h('code', { className: 'pd-update-spec' }, spec) : null,
             ),
+            // 右半只有两种形态：有新版就报「从 → 到」（目标版本是重点），
+            // 没有就一行淡字。没有中间状态，就不会出现 0.16.0 → 0.16.0。
             fresh
               ? h(
                   'span',
                   { className: 'pd-update-ver' },
-                  h('span', { className: 'pd-update-from' }, current),
+                  h('span', { className: 'pd-update-from' }, 'v' + current),
                   h('span', { className: 'pd-update-arrow' }, '→'),
-                  h('span', { className: 'pd-update-to' }, latest),
+                  h('span', { className: 'pd-update-to' }, 'v' + latest),
+                  from === '' || from === 'npm' ? null : h('span', { className: 'pd-update-src' }, from),
                 )
               : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
             busyNow
@@ -3025,7 +3029,7 @@ function jobPhaseKey(phase) {
                     'span',
                     { className: 'pd-update-main' },
                     h('span', { className: 'pd-update-name' }, row.name),
-                    h('span', { className: 'pd-update-meta' }, h('span', { className: 'pd-tag' }, t('orphanRow'))),
+                    h('span', { className: 'pd-update-spec pd-update-orphan' }, t('orphanRow')),
                   ),
                   row.hasUpdate === true
                     ? h(

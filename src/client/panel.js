@@ -1724,7 +1724,10 @@
           const busyNow = busyRow(row.name);
           const inRound = busyNow && roundRow(row.name);
           const info = updateBy.get(row.name) || null;
-          const fresh = info !== null || (extra !== null && extra.hasUpdate === true);
+          // info 存在只代表「查过这个包」，不代表它有新版。没有新版的行走
+          // 下面那个 else 分支，显示「已是最新」。
+          const fresh =
+            (info !== null && info.hasUpdate === true) || (extra !== null && extra.hasUpdate === true);
           const on = isWatched(row);
           const spec = info !== null ? info.spec : null;
           const kind = info !== null ? info.kind : null;
@@ -1751,20 +1754,18 @@
               'span',
               { className: 'pd-update-main' },
               h('span', { className: 'pd-update-name' }, row.name),
-              h(
-                'span',
-                { className: 'pd-update-meta' },
-                typeof spec === 'string' && kind !== 'exact' ? h('code', null, spec) : null,
-                from === '' || from === 'npm' ? null : h('span', { className: 'pd-tag' }, from),
-              ),
+              typeof spec === 'string' && kind !== 'exact' ? h('code', { className: 'pd-update-spec' }, spec) : null,
             ),
+            // 右半只有两种形态：有新版就报「从 → 到」（目标版本是重点），
+            // 没有就一行淡字。没有中间状态，就不会出现 0.16.0 → 0.16.0。
             fresh
               ? h(
                   'span',
                   { className: 'pd-update-ver' },
-                  h('span', { className: 'pd-update-from' }, current),
+                  h('span', { className: 'pd-update-from' }, 'v' + current),
                   h('span', { className: 'pd-update-arrow' }, '→'),
-                  h('span', { className: 'pd-update-to' }, latest),
+                  h('span', { className: 'pd-update-to' }, 'v' + latest),
+                  from === '' || from === 'npm' ? null : h('span', { className: 'pd-update-src' }, from),
                 )
               : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
             busyNow
@@ -1981,7 +1982,7 @@
                     'span',
                     { className: 'pd-update-main' },
                     h('span', { className: 'pd-update-name' }, row.name),
-                    h('span', { className: 'pd-update-meta' }, h('span', { className: 'pd-tag' }, t('orphanRow'))),
+                    h('span', { className: 'pd-update-spec pd-update-orphan' }, t('orphanRow')),
                   ),
                   row.hasUpdate === true
                     ? h(
