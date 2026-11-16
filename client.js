@@ -78,7 +78,9 @@ window.__ModuleLoader__.load({
         stopping: 'Stopping…',
         selfLocked: 'The dashboard cannot switch itself',
         loading: 'loading',
-        bulkNote: 'Only Auto rows are picked by a bulk update',
+        bulkNote: 'Nothing ticked has a newer version',
+        pickHint: 'Tick a plugin to include it in one-click update',
+        upToDate: 'up to date',
         detail: 'Details',
         dModule: 'Module',
         dEntry: 'Entry id',
@@ -245,7 +247,9 @@ window.__ModuleLoader__.load({
         stopping: '正在停止…',
         selfLocked: '面板不能关闭自己',
         loading: '加载中',
-        bulkNote: '一键更新只勾「自动」的行，手动行请单独勾选',
+        bulkNote: '勾选里没有带新版的插件',
+        pickHint: '勾上的插件才参与一键更新',
+        upToDate: '已是最新',
         detail: '详细信息',
         dModule: '模块',
         dEntry: '配置行',
@@ -871,6 +875,7 @@ function jobPhaseKey(phase) {
       '.pd-upbtn-spin{flex:none;margin-right:1px}',
       '.pd-skel-error{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:13px;',
       'color:var(--dsw-alias-state-error-primary)}',
+      '.pd-update-ver-idle{color:var(--dsw-alias-label-tertiary)}',
       '.pd-update-note{font-size:12px;color:var(--dsw-alias-label-tertiary);',
       'margin-left:auto}',
       '.pd-spin-live{border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
@@ -1159,7 +1164,9 @@ function jobPhaseKey(phase) {
         const [updates, setUpdates] = React.useState(null);
 
         const [updatesBusy, setUpdatesBusy] = React.useState('');
-        const [picked, setPicked] = React.useState({});
+        // 「这次一键更新装哪些」始终由勾选（自动名单）+ 有新版推导出来，
+        // 不再单独存一份临时勾选；ref 只是把它交给 useCallback 里的旧闭包。
+        const candidatesRef = React.useRef([]);
         const [updateLog, setUpdateLog] = React.useState(null);
         const [extras, setExtras] = React.useState(null);
         const [extrasBusy, setExtrasBusy] = React.useState('');
@@ -1283,10 +1290,6 @@ function jobPhaseKey(phase) {
           const id = patchIdOf.get(name);
           return id === undefined ? true : roster.indexOf(id) >= 0;
         };
-        const knownManual = (name) => {
-          const id = patchIdOf.get(name);
-          return id !== undefined && roster.indexOf(id) < 0;
-        };
 
         const run = React.useCallback(
           async (label, optimistic, call, key) => {
@@ -1385,22 +1388,6 @@ function jobPhaseKey(phase) {
               // 拿不到 extras 不影响精确版本的那些包。
               extrasNext = null;
             }
-            const choice = {};
-            // 只替「自动」名单里的行预先打勾。手动就是"别碰我"，一键更新必须
-            // 尊重它；手动行仍然可以自己点一下勾选，那是一次明确的单点操作，
-            // 不该被名单挡住。
-            for (const row of next.rows || []) {
-              if (row.hasUpdate === true && inAuto(row.name)) choice[row.name] = true;
-            }
-            if (extrasNext !== null && Array.isArray(extrasNext.rows)) {
-              for (const row of extrasNext.rows) {
-                if (row.hasUpdate !== true) continue;
-                if (typeof row.name !== 'string') continue;
-                // extras 行同样只在自动名单里才预先勾上。
-                if (inAuto(row.name)) choice[row.name] = true;
-              }
-            }
-            setPicked(choice);
             setUpdateLog(null);
           } catch (error) {
             // 进面板时那一次自动检查失败不弹提示，免得一打开就报错。
@@ -1414,11 +1401,11 @@ function jobPhaseKey(phase) {
 
         const applyUpdates = React.useCallback(async (explicitNames) => {
           if (updatesBusy !== '') return;
-          // 组标题栏那个「一键更新」不在更新页里，勾选集可能是空的或者过期的，
-          // 所以允许调用方直接把要装的名单递进来，而不是只认 picked。
-          const names = Array.isArray(explicitNames)
-            ? explicitNames
-            : Object.keys(picked).filter((name) => picked[name] === true);
+        // 「一键更新」作用于：勾上（自动名单）且有新版的行。勾选本身就是设置，
+          // 落在 state.json 的 auto 里，所以这里没有临时勾选状态——关掉面板再打开，
+          // 勾还是那几个。放进 ref 是因为 useCallback 只建一次，直接闭包会抓住
+          // 第一次渲染的空名单。
+          const names = Array.isArray(explicitNames) ? explicitNames : candidatesRef.current;
           if (names.length === 0) {
             // 空勾选以前是静默 return：按钮点了没反应，看着像坏了。这里说清
             // 楚为什么没动——多半是这些行都被标成手动了。
@@ -1475,7 +1462,7 @@ function jobPhaseKey(phase) {
             // （比如 load() 改成会抛之后）按钮就永远停在「更新中」。
             setUpdatesBusy('');
           }
-        }, [picked, updatesBusy, extras, load, checkUpdates, t]);
+        }, [updatesBusy, extras, load, checkUpdates, t]);
 
         const viewLog = React.useCallback(async () => {
           if (logText !== null) {
@@ -2632,43 +2619,81 @@ function jobPhaseKey(phase) {
           );
         };
 
-        const pickedNames = Object.keys(picked).filter((name) => picked[name] === true);
-        const updateRowNode = (row) => {
-          // The host job runs pnpm once for the whole batch, so no row ever flips
-          // its own phase to "running". Mark the names the job carries instead,
-          // otherwise the banner spins while the list looks dead.
-          const busyNow =
-            job !== null &&
-            job.running === true &&
-            Array.isArray(job.names) &&
-            job.names.indexOf(row.name) >= 0;
-          // 这一轮真正在装的几个：跟着轮次走，比整批都转圈有用得多。
-          const inRound =
-            job !== null &&
-            job.running === true &&
-            Array.isArray(job.installing) &&
-            job.installing.indexOf(row.name) >= 0;
+        // 更新信息按包名索引：这一页既要用它显示 0.3.6 → 0.3.8，也要用它
+        // 判断某一行到底有没有新版。
+        const updateBy = new Map();
+        if (updates !== null && Array.isArray(updates.rows)) {
+          for (const row of updates.rows) if (typeof row.name === 'string') updateBy.set(row.name, row);
+        }
+        const extraBy = new Map();
+        if (extras !== null && Array.isArray(extras.rows)) {
+          for (const row of extras.rows) if (typeof row.name === 'string') extraBy.set(row.name, row);
+        }
+
+        // 「一键更新」作用于：勾上（自动名单）且有新版的行。勾选本身就是设置，
+        // 落在 state.json 的 auto 里，所以这里没有临时勾选状态——关掉面板再打开，
+        // 勾还是那几个。
+        const updateCandidates = (() => {
+          const names = new Set();
+          for (const row of data !== null && Array.isArray(data.rows) ? data.rows : []) {
+            if (row.manageable && row.self !== true && isAuto(row) && updateOf.has(row.name)) {
+              names.add(row.name);
+            }
+          }
+          if (extras !== null && Array.isArray(extras.rows)) {
+            for (const row of extras.rows) {
+              if (row.hasUpdate === true && typeof row.name === 'string' && inAuto(row.name)) {
+                names.add(row.name);
+              }
+            }
+          }
+          return [...names];
+        })();
+        candidatesRef.current = updateCandidates;
+
+        const busyRow = (name) =>
+          job !== null && job.running === true && Array.isArray(job.names) && job.names.indexOf(name) >= 0;
+        const roundRow = (name) =>
+          job !== null && job.running === true && Array.isArray(job.installing) && job.installing.indexOf(name) >= 0;
+
+        // 更新页是「谁参与一键更新」的选择器：每个可管理的插件一行，勾上就进名单。
+        // 所以这里不按「有没有新版」过滤 —— 没新版的行同样要能勾：勾的是身份，
+        // 不是这一版有没有得装。
+        const rosterRow = (row, extra) => {
+          const busyNow = busyRow(row.name);
+          const inRound = busyNow && roundRow(row.name);
+          const info = updateBy.get(row.name) || null;
+          const fresh = info !== null || (extra !== null && extra.hasUpdate === true);
+          let label = null;
+          if (info !== null) label = info.current + ' → ' + info.latest;
+          else if (fresh) label = String(extra.current || '') + ' → ' + String(extra.latest || '');
+          const spec = info !== null ? info.spec : null;
+          const kind = info !== null ? info.kind : null;
           return h(
             'label',
-            { key: row.name, className: busyNow ? 'pd-update-row pd-update-row-busy' : 'pd-update-row' },
+            { key: row.name, className: 'pd-update-row' + (busyNow ? ' pd-update-row-busy' : '') },
             h('input', {
               type: 'checkbox',
               className: 'pd-check',
-              checked: picked[row.name] === true,
+              checked: isAuto(row),
               disabled: updatesBusy !== '' || busyNow,
-              onChange: () =>
-                setPicked((prev) => ({ ...prev, [row.name]: prev[row.name] !== true })),
+              title: t('pickHint'),
+              onChange: () => setAuto(row, !isAuto(row)),
             }),
             h('span', { className: 'pd-update-name' }, row.name),
-            h('span', { className: 'pd-update-ver' }, row.current + ' → ' + row.latest),
-            typeof row.spec === 'string' && row.kind !== 'exact'
-              ? h('code', { className: 'pd-update-spec', title: row.spec }, row.spec)
+            label === null
+              ? h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate'))
+              : h('span', { className: 'pd-update-ver' }, label),
+            typeof spec === 'string' && kind !== 'exact'
+              ? h('code', { className: 'pd-update-spec', title: spec }, spec)
               : null,
-            // 手动行默认不勾，也不该让人以为按钮坏了：这里直接写明它是手动。
-            knownManual(row.name)
-              ? h('span', { className: 'pd-tag pd-tag-warn', title: t('bulkNote') }, t('modeManual'))
+            extra !== null && extra.source === 'github' ? h('span', { className: 'pd-tag' }, 'github') : null,
+            busyNow
+              ? h('span', {
+                  className: 'pd-spin pd-update-busy' + (inRound ? ' pd-spin-live' : ''),
+                  title: t('rowUpdating'),
+                })
               : null,
-            busyNow ? h('span', { className: 'pd-spin pd-update-busy' + (inRound ? ' pd-spin-live' : ''), title: t('rowUpdating') }) : null,
           );
         };
 
@@ -2770,12 +2795,12 @@ function jobPhaseKey(phase) {
               {
                 type: 'button',
                 className: 'pd-btn pd-btn-primary',
-                disabled: updatesBusy !== '' || pickedNames.length === 0,
+                disabled: updatesBusy !== '' || updateCandidates.length === 0,
                 // 不传参：applyUpdates(undefined) 才算「按勾选集来」。
                 // 直接把函数交给 onClick 会把 MouseEvent 当成名单递进去。
                 onClick: () => applyUpdates(),
               },
-              t('updateAll') + (pickedNames.length > 0 ? ' (' + pickedNames.length + ')' : ''),
+              t('updateAll') + (updateCandidates.length > 0 ? ' (' + updateCandidates.length + ')' : ''),
             ),
             h(
               'button',
@@ -2784,7 +2809,7 @@ function jobPhaseKey(phase) {
             ),
             // 一键更新只认「自动」名单，这里把它写在按钮旁边，免得用户对着
             // 一排没勾上的行猜为什么。
-            h('span', { className: 'pd-update-note' }, t('bulkNote')),
+            h('span', { className: 'pd-update-note' }, t('pickHint')),
           ),
           logText === null
             ? null
@@ -2801,12 +2826,36 @@ function jobPhaseKey(phase) {
                 ),
               ),
           (() => {
-            const state = updatePageState(updates, updatesBusy === 'check');
-            if (state.kind === 'list') return state.updatable.map(updateRowNode);
-            if (state.kind === 'error') return h('div', { className: 'pd-empty' }, state.message);
-            if (state.kind === 'none') return h('div', { className: 'pd-empty' }, t('updateNone'));
-            const key = state.kind === 'checking' ? 'updateChecking' : 'updateIdle';
-            return h('div', { className: 'pd-empty' }, t(key));
+            if (updatesBusy === 'check') return h('div', { className: 'pd-empty' }, t('updateChecking'));
+            if (data === null) return h('div', { className: 'pd-empty' }, t('loading'));
+            // 这一页列出所有插件，而不是只列「有新版」的那几个：勾选是设置在
+            // 先，装包在后，用户得能看到完整名单才能决定谁参与一键更新。
+            const rows = (Array.isArray(data.rows) ? data.rows : []).filter(
+              (row) => row.manageable === true && row.self !== true,
+            );
+            const known = new Set(rows.map((row) => row.name));
+            // extras 里那些在状态列表里找不到的包（少数只在 package.json 里留
+            // 了条目的）也列出来，否则它们会凭空消失。
+            const orphans = extras !== null && Array.isArray(extras.rows)
+              ? extras.rows.filter((row) => typeof row.name === 'string' && !known.has(row.name))
+              : [];
+            if (rows.length === 0 && orphans.length === 0) {
+              return h('div', { className: 'pd-empty' }, t('updateNone'));
+            }
+            return [
+              ...rows.map((row) => rosterRow(row, extraBy.get(row.name) || null)),
+              ...orphans.map((row) =>
+                h(
+                  'label',
+                  { key: row.name, className: 'pd-update-row' },
+                  h('input', { type: 'checkbox', className: 'pd-check', checked: inAuto(row.name), disabled: true }),
+                  h('span', { className: 'pd-update-name' }, row.name),
+                  row.hasUpdate === true
+                    ? h('span', { className: 'pd-update-ver' }, String(row.current || '') + ' → ' + String(row.latest || ''))
+                    : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
+                ),
+              ),
+            ];
           })(),
           (() => {
             // 「有新版但超出范围」单独列一段：它不是错误，也不该被批量更新
@@ -2995,6 +3044,21 @@ function jobPhaseKey(phase) {
                 ),
               ),
               h('span', { className: 'pd-sep' }),
+              // 主列表也放一个一键更新：看了这一页发现该升级的，不用切标签、
+              // 不用重新勾选。它只装「勾上 + 有新版」的那些，和更新页同一个口径。
+              updateCandidates.length === 0
+                ? null
+                : h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pd-btn pd-btn-primary',
+                      disabled: busy || running || updatesBusy !== '',
+                      title: t('updateAll') + '：' + updateCandidates.join(', '),
+                      onClick: () => applyUpdates(updateCandidates),
+                    },
+                    t('updateAll') + ' (' + updateCandidates.length + ')',
+                  ),
               h('button', { type: 'button', className: 'pd-btn', disabled: busy, onClick: load }, t('refresh')),
               busy
                 ? h(

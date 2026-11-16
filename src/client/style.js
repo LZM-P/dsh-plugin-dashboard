@@ -130,6 +130,7 @@
       '.pd-upbtn-spin{flex:none;margin-right:1px}',
       '.pd-skel-error{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:13px;',
       'color:var(--dsw-alias-state-error-primary)}',
+      '.pd-update-ver-idle{color:var(--dsw-alias-label-tertiary)}',
       '.pd-update-note{font-size:12px;color:var(--dsw-alias-label-tertiary);',
       'margin-left:auto}',
       '.pd-spin-live{border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
