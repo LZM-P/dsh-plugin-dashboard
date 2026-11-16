@@ -225,6 +225,14 @@
             setError(null);
             // 上面那份列表变了，之前缓存的详情就可能全是旧的。
             setDetails({});
+            // 留一份给下一次打开面板：listPlugins() 是宿主服务的固有成本，
+            // 两百多个条目每次都要问一遍，快照能让那一秒不再空着。
+            try {
+              window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(next));
+            } catch (failure) {
+              // 存不下（配额满、隐私模式）就算了，下次照样等那一秒。
+              void failure;
+            }
             // 返回新快照：调用方要拿它和「操作成功应有的样子」比对，判断一次
             // 失败是不是假失败。返回 undefined 会让那个判断在拿 null 判空之后
             // 直接读到 undefined.rows。
@@ -236,6 +244,19 @@
         }, []);
 
         React.useEffect(() => {
+          // 先把上一次的快照画出来，再在后台取新的：首屏不用等那 1 秒。
+          // 只认和自己结构对得上的快照（rows 是数组），坏数据宁可不用。
+          try {
+            const saved = window.localStorage.getItem(SNAPSHOT_KEY);
+            if (saved !== null && saved !== '') {
+              const parsed = JSON.parse(saved);
+              if (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.rows)) {
+                setData(parsed);
+              }
+            }
+          } catch (failure) {
+            void failure;
+          }
           load();
         }, [load]);
 
@@ -856,35 +877,40 @@
             'div',
             { className: 'pd-root' },
             h('style', { dangerouslySetInnerHTML: { __html: CSS } }),
-            h('div', { className: 'pd-title' }, t('title')),
+            // 同样的 .pd-inner 缩进：加载态漏了它，标题会贴着容器左边被切掉一块。
             h(
               'div',
-              { className: 'pd-skel' },
+              { className: 'pd-inner' },
+              h('div', { className: 'pd-title' }, t('title')),
               h(
                 'div',
-                { className: 'pd-skel-head' },
-                h('span', { className: 'pd-spin' }),
-                h('span', null, slowLoad ? t('loadingSlow') : t('loading')),
-              ),
-              // 六行足够占住位置，也不至于让人以为列表已经出来了。
-              [0, 1, 2, 3, 4, 5].map((index) => skeleton('s' + index)),
-            ),
-            error === null
-              ? null
-              : h(
+                { className: 'pd-skel' },
+                h(
                   'div',
-                  { className: 'pd-skel-error' },
-                  h('span', null, error),
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'pd-btn pd-btn-sm',
-                      onClick: () => load(),
-                    },
-                    t('refresh'),
-                  ),
+                  { className: 'pd-skel-head' },
+                  h('span', { className: 'pd-spin' }),
+                  h('span', null, slowLoad ? t('loadingSlow') : t('loading')),
                 ),
+                // 六行足够占住位置，也不至于让人以为列表已经出来了。
+                [0, 1, 2, 3, 4, 5].map((index) => skeleton('s' + index)),
+              ),
+              error === null
+                ? null
+                : h(
+                    'div',
+                    { className: 'pd-skel-error' },
+                    h('span', null, error),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'pd-btn pd-btn-sm',
+                        onClick: () => load(),
+                      },
+                      t('refresh'),
+                    ),
+                  ),
+            ),
           );
         }
 

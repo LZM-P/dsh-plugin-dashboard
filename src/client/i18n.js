@@ -338,6 +338,8 @@
     // 哪个任务的结果已经报过了。存在 localStorage 里，面板关掉再打开不会重复弹。
     const JOB_SEEN_KEY = 'plugin-rack:seenJob';
     const LANG_KEY = 'plugin-rack:lang';
+    // 上一次拿到的 /state，用来在打开面板的那一秒先把界面画出来。
+    const SNAPSHOT_KEY = 'plugin-rack:snapshot';
     const DEFAULT_LANG = 'zh';
 
     function storedLang() {
@@ -367,4 +369,4 @@
       return (key, vars) => fill(table[key] !== undefined ? table[key] : DICT.en[key] || key, vars);
     }
 
-export { DICT, translator, fill, pickLocale, storedLang, DEFAULT_LANG, JOB_SEEN_KEY, LANG_KEY }
+export { DICT, translator, fill, pickLocale, storedLang, DEFAULT_LANG, JOB_SEEN_KEY, LANG_KEY, SNAPSHOT_KEY }
