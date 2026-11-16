@@ -80,7 +80,7 @@ window.__ModuleLoader__.load({
         loading: 'loading',
         bulkNote: 'Nothing ticked has a newer version',
         pickHint: 'Tick a plugin to include it in one-click update',
-        rosterTally: 'In one-click update: {n} / {total}',
+        rosterTallyLabel: 'In one-click update',
         selectAllRoster: 'All',
         selectNoneRoster: 'None',
         orphanRow: 'no entry',
@@ -257,7 +257,7 @@ window.__ModuleLoader__.load({
         loading: '加载中',
         bulkNote: '勾选里没有带新版的插件',
         pickHint: '勾上的插件才参与一键更新',
-        rosterTally: '参与一键更新 {n} / {total}',
+        rosterTallyLabel: '参与一键更新',
         selectAllRoster: '全选',
         selectNoneRoster: '全不选',
         orphanRow: '无入口',
@@ -891,7 +891,6 @@ function jobPhaseKey(phase) {
       '.pd-upbtn-spin{flex:none;margin-right:1px}',
       '.pd-skel-error{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:13px;',
       'color:var(--dsw-alias-state-error-primary)}',
-      '.pd-update-ver-idle{color:var(--dsw-alias-label-tertiary)}',
       '.pd-update-note{font-size:12px;color:var(--dsw-alias-label-tertiary);',
       'margin-left:auto}',
       '.pd-spin-live{border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
@@ -998,30 +997,41 @@ function jobPhaseKey(phase) {
       '.pd-hint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
       // 名单一行一个插件：左边身份（名字 + 范围/来源），右边状态（版本变化）。
       // 勾上的整行实心、没勾的压暗，扫一眼就知道谁会跟着一键更新走。
-      '.pd-update-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;',
-      'border:1px solid transparent;transition:background .12s ease,border-color .12s ease}',
+      // 名单：一行一个插件。左边是身份（名字 + 范围/来源），右边是状态
+      // （版本变化，或「已是最新」）。勾上的实心、没勾的压暗，扫一眼就知道
+      // 谁跟着一键更新走。
+      '.pd-roster{display:flex;flex-direction:column;gap:2px;margin-top:4px}',
+      '.pd-install-head{padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}',
+      '.pd-update-row{display:flex;align-items:center;gap:12px;min-height:40px;padding:0 12px;border-radius:9px;',
+      'cursor:pointer;transition:background .12s ease}',
       '.pd-update-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
-      '.pd-update-row-off{opacity:.52}',
-      '.pd-update-row-off:hover{opacity:.8}',
+      '.pd-update-row-off{opacity:.5}',
+      '.pd-update-row-off:hover{opacity:.75}',
       '.pd-update-row-on{background:var(--dsw-alias-bg-layer-2)}',
       '.pd-update-row-on:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.pd-update-row-busy{background:var(--dsw-alias-interactive-bg-hover);cursor:default}',
-      '.pd-update-main{flex:1;min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden}',
-      '.pd-update-name{min-width:0;font-size:13px;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.pd-update-main{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;overflow:hidden}',
+      '.pd-update-name{min-width:0;font-size:13px;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+      'color:var(--dsw-alias-label-primary)}',
       '.pd-update-row-on .pd-update-name{font-weight:600}',
-      '.pd-update-meta{flex:none;display:inline-flex;align-items:center;gap:6px}',
+      '.pd-update-meta{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:11px;line-height:16px;',
+      'color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
       '.pd-update-meta code{font-family:inherit;font-size:10px;line-height:16px;padding:0 5px;border-radius:5px;',
       'border:1px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-tertiary)}',
-      '.pd-update-ver{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:12px;line-height:18px;',
-      'font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary)}',
-      '.pd-update-ver-idle{color:var(--dsw-alias-label-tertiary)}',
+      '.pd-update-ver{flex:none;display:inline-flex;align-items:baseline;gap:6px;font-size:12px;line-height:18px;',
+      'font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
+      '.pd-update-ver-idle{color:var(--dsw-alias-label-tertiary);font-size:11px}',
       '.pd-update-from{color:var(--dsw-alias-label-tertiary)}',
-      '.pd-update-arrow{color:var(--dsw-alias-brand-primary)}',
+      '.pd-update-arrow{color:var(--dsw-alias-border-l4)}',
       '.pd-update-to{font-weight:600;color:var(--dsw-alias-brand-primary)}',
-      '.pd-update-busy{flex:none;border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
-      // 名单汇总条：「参与一键更新 12 / 33」+ 全选/全不选
-      '.pd-roster-bar{display:flex;align-items:center;gap:10px;padding:0 12px 8px;flex-wrap:wrap}',
-      '.pd-roster-count{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+      '.pd-update-busy{flex:none;margin-left:2px;',
+      'border-color:var(--dsw-alias-brand-primary) transparent var(--dsw-alias-brand-primary) var(--dsw-alias-brand-primary)}',
+      // 汇总条：「参与一键更新 12 / 33」+ 全选 / 全不选
+      '.pd-roster-bar{display:flex;align-items:center;gap:10px;padding:10px 12px 6px;flex-wrap:wrap;',
+      'border-bottom:1px solid var(--dsw-alias-border-l2);margin-bottom:4px}',
+      '.pd-roster-count{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);',
+      'font-variant-numeric:tabular-nums}',
+      '.pd-roster-count b{color:var(--dsw-alias-label-primary)}',
       '.pd-roster-act{margin-left:auto;display:inline-flex;gap:6px}',
       '.pd-check{flex:none;width:15px;height:15px;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}',
       '.pd-update-log{padding:10px 12px;border-radius:9px;font-size:12px;line-height:18px;background:var(--dsw-alias-bg-layer-2)}',
@@ -2811,7 +2821,6 @@ function jobPhaseKey(phase) {
         };
 
         const installPanel = h(
-
           'div',
           { className: 'pd-updates' },
           h(
@@ -2970,7 +2979,9 @@ function jobPhaseKey(phase) {
                 h(
                   'span',
                   { className: 'pd-roster-count' },
-                  t('rosterTally', { n: String(ticked), total: String(rows.length) }),
+                  t('rosterTallyLabel') + ' ',
+                  h('b', null, String(ticked)),
+                  ' / ' + String(rows.length),
                 ),
                 // 老宿主不认 mode:'names'（批量勾选是后加的）。按钮就不显示，
                 // 而不是给一个点了报 400 的按钮。
@@ -3001,8 +3012,11 @@ function jobPhaseKey(phase) {
                   ),
                 ),
               ),
-              ...rows.map((row) => rosterRow(row, extraBy.get(row.name) || null)),
-              ...orphans.map((row) =>
+              h(
+                'div',
+                { key: 'roster-list', className: 'pd-roster' },
+                ...rows.map((row) => rosterRow(row, extraBy.get(row.name) || null)),
+                ...orphans.map((row) =>
                 h(
                   'label',
                   { key: row.name, className: 'pd-update-row pd-update-row-off' },
@@ -3022,6 +3036,7 @@ function jobPhaseKey(phase) {
                         h('span', { className: 'pd-update-to' }, String(row.latest || '')),
                       )
                     : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
+                ),
                 ),
               ),
             ];

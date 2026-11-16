@@ -1777,7 +1777,6 @@
         };
 
         const installPanel = h(
-
           'div',
           { className: 'pd-updates' },
           h(
@@ -1936,7 +1935,9 @@
                 h(
                   'span',
                   { className: 'pd-roster-count' },
-                  t('rosterTally', { n: String(ticked), total: String(rows.length) }),
+                  t('rosterTallyLabel') + ' ',
+                  h('b', null, String(ticked)),
+                  ' / ' + String(rows.length),
                 ),
                 // 老宿主不认 mode:'names'（批量勾选是后加的）。按钮就不显示，
                 // 而不是给一个点了报 400 的按钮。
@@ -1967,8 +1968,11 @@
                   ),
                 ),
               ),
-              ...rows.map((row) => rosterRow(row, extraBy.get(row.name) || null)),
-              ...orphans.map((row) =>
+              h(
+                'div',
+                { key: 'roster-list', className: 'pd-roster' },
+                ...rows.map((row) => rosterRow(row, extraBy.get(row.name) || null)),
+                ...orphans.map((row) =>
                 h(
                   'label',
                   { key: row.name, className: 'pd-update-row pd-update-row-off' },
@@ -1988,6 +1992,7 @@
                         h('span', { className: 'pd-update-to' }, String(row.latest || '')),
                       )
                     : h('span', { className: 'pd-update-ver pd-update-ver-idle' }, t('upToDate')),
+                ),
                 ),
               ),
             ];
