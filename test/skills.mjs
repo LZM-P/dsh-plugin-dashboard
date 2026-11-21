@@ -12,6 +12,7 @@ import {
   applySkillState,
   createSkillPolicyProvider,
   parseSkillDoc,
+  pluginSkillPackages,
   readSkillState,
   resolveWinners,
   scanSkills,
@@ -175,6 +176,77 @@ try {
   eq(ghost.candidates, [], 'an off entry for a missing skill contributes nothing')
 } finally {
   rmSync(workspace, { recursive: true, force: true })
+}
+
+// ── plugin-bundled skills ───────────────────────────────────────────────────
+// A plugin can ship its own skills/ directory inside the package. Those are
+// loaded by the host, so the panel has to list them too, or the page quietly
+// under-reports what the machine actually runs.
+{
+  const workspace = mkdtempSync(join(tmpdir(), 'rack-skills-plugin-'))
+  try {
+    const nm = join(workspace, 'node_modules')
+    const bare = join(nm, 'plain-plugin')
+    const scoped = join(nm, '@scope', 'scoped-plugin')
+    const noSkills = join(nm, 'no-skills-here')
+    mkdirSync(join(bare, 'skills', 'alpha'), { recursive: true })
+    mkdirSync(join(scoped, 'skills', 'beta'), { recursive: true })
+    mkdirSync(noSkills, { recursive: true })
+    const doc = (name) => '---\nname: ' + name + '\ndescription: A bundled skill.\n---\n\nBody.\n'
+    writeFileSync(join(bare, 'skills', 'alpha', 'SKILL.md'), doc('alpha'))
+    writeFileSync(join(scoped, 'skills', 'beta', 'SKILL.md'), doc('beta'))
+
+    const found = pluginSkillPackages(nm)
+    eq(found.length, 2, 'only packages that ship a skills directory are roots')
+    check(found.indexOf(bare) >= 0, 'a bare package with skills/ is found')
+    check(found.indexOf(scoped) >= 0, 'a scoped package with skills/ is found')
+    check(found.indexOf(noSkills) < 0, 'a package without skills/ is not a root')
+    eq(pluginSkillPackages(null), [], 'no node_modules path yields no roots')
+    eq(pluginSkillPackages(join(workspace, 'missing')), [], 'a missing directory yields no roots')
+
+    // Isolate from the real machine: without explicit homes this helper reads
+    // the developer's own ~/.dsh/skills and the assertions below stop meaning
+    // anything on a machine that has skills installed.
+    const roots = skillRoots({
+      dshHome: join(workspace, 'empty-dsh'),
+      agentsHome: join(workspace, 'empty-agents'),
+      projectRoots: [],
+      pluginRoots: found,
+    })
+    const scanned = scanSkills(roots)
+    const bundled = scanned.skills.filter((skill) => String(skill.rootKey).startsWith('plugin:'))
+    eq(bundled.length, 2, 'both bundled skills are scanned')
+    check(bundled.every((skill) => skill.loadable === true), 'bundled skills parse like any other')
+    check(bundled.every((skill) => skill.scope === 'plugin'), 'bundled skills carry the plugin scope')
+    check(
+      bundled.every((skill) => skill.rank === 600),
+      'bundled skills rank last so a user copy of the same name wins',
+    )
+
+    // A user directory with the same name must still win.
+    const userDir = join(workspace, 'dsh', 'skills', 'alpha')
+    mkdirSync(userDir, { recursive: true })
+    writeFileSync(join(userDir, 'SKILL.md'), doc('alpha'))
+    const both = skillRoots({
+      dshHome: join(workspace, 'dsh'),
+      agentsHome: join(workspace, 'empty-agents'),
+      projectRoots: [],
+      pluginRoots: found,
+    })
+    const winners = resolveWinners(scanSkills(both).skills)
+    const alpha = winners.filter((skill) => skill.name === 'alpha')
+    eq(alpha.length, 2, 'both copies of alpha are listed')
+    check(
+      alpha.filter((skill) => skill.winner === true).length === 1,
+      'exactly one copy of alpha wins',
+    )
+    check(
+      alpha.find((skill) => skill.winner === true).scope === 'user',
+      'the user copy outranks the bundled one',
+    )
+  } finally {
+    rmSync(workspace, { recursive: true, force: true })
+  }
 }
 
 if (failures > 0) {

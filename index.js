@@ -72,6 +72,7 @@ import { EXACT_VERSION, compareVersions, isVersionSpec, parseSpec, satisfiesSpec
 import {
   applySkillState,
   createSkillPolicyProvider,
+  pluginSkillPackages,
   readSkillState,
   resolveWinners,
   scanSkills,
@@ -219,7 +220,10 @@ function stateFile() {
  */
 function skillSnapshot(ctx) {
   const state = readSkillState(stateDir())
-  const roots = skillRoots({ projectRoots: projectRootsOf(ctx) })
+  const roots = skillRoots({
+    projectRoots: projectRootsOf(ctx),
+    pluginRoots: pluginSkillPackages(nodeModulesRootOf(ctx)),
+  })
   const scanned = scanSkills(roots)
   const resolved = resolveWinners(scanned.skills)
   const skills = applySkillState(resolved, state)
@@ -645,6 +649,40 @@ function profileDir(rows) {
 
 function firstString(value) {
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+/** One-minute memory: the skill page opens often and this walks the loader each time. */
+const skillNodeModulesCache = { at: 0, value: null }
+
+/**
+ * The node_modules directory of the profile this panel is running in, or null.
+ *
+ * Plugin-bundled skills live there, so the skill scan needs the directory, not
+ * just the rows. Only a linked row can be walked back to it; on a bare install
+ * (no file:// module) there is nothing to derive from and null is honest.
+ *
+ * @param {object} ctx
+ * @returns {string|null}
+ */
+function nodeModulesRootOf(ctx) {
+  const cache = skillNodeModulesCache
+  const now = Date.now()
+  if (cache.value !== undefined && now - cache.at < 60_000) return cache.value
+  /** @type {string|null} */
+  let root = null
+  try {
+    const rows = ctx.pluginManager !== undefined && typeof ctx.pluginManager.listPlugins === 'function'
+      ? ctx.pluginManager.listPlugins()
+      : null
+    const named = Array.isArray(rows) ? rows.map(row => ({ moduleName: typeof row?.moduleName === 'string' ? row.moduleName : '' })) : []
+    const dir = profileDir(named)
+    root = dir === null ? null : join(dir, 'node_modules')
+  } catch {
+    root = null
+  }
+  skillNodeModulesCache.at = now
+  skillNodeModulesCache.value = root
+  return root
 }
 
 /** Longest subtitle we keep; the row already ellipsizes, this keeps the payload small. */
@@ -4759,7 +4797,12 @@ export function apply(ctx) {
     if (skills === undefined || typeof skills.registerProvider !== 'function') return () => {}
     const provider = createSkillPolicyProvider({
       read: () => readSkillState(stateDir()),
-      scan: () => resolveWinners(scanSkills(skillRoots({ projectRoots: projectRootsOf(ctx) })).skills),
+      scan: () =>
+        resolveWinners(
+          scanSkills(
+            skillRoots({ projectRoots: projectRootsOf(ctx), pluginRoots: pluginSkillPackages(nodeModulesRootOf(ctx)) }),
+          ).skills,
+        ),
     })
     return skills.registerProvider(() => provider)
   }, 'rack skill policy provider')

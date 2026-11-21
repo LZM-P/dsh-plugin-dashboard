@@ -29,9 +29,9 @@ DSH（DeepSeek Harness）的插件面板：**所有插件一屏看完，一个�
 
 技能页是**本插件自己实现的**，不依赖任何第三方技能插件：
 
-- **自己扫描**：只扫 DSH 真正加载的目录（`~/.dsh/skills`、`~/.agents/skills`、当前项目 `.dsh/skills`），不碰 Codex / trae 等其它 agent 的私有目录。本机 346 个技能扫描约 **110 ms**。
+- **自己扫描**：扫 DSH 真正加载的目录——`~/.dsh/skills`、`~/.agents/skills`、当前项目 `.dsh/skills`，外加**插件包自带的 `skills/`**（从 profile 的 `node_modules` 里发现，一个包一个根）。不碰 Codex / trae 等其它 agent 的私有目录。本机 363 个技能扫描约 **110 ms**。
 - **自己解析**：内置一个只认 `name` / `description` / `whenToUse` / `disable-model-invocation` / `user-invocable` 的 frontmatter 读取器；解析不了的文件会标成「不可加载」并写明原因，而不是猜。
-- **自己判优先级**：同名技能按项目 > DSH > 共享的顺序，只让一份生效，其余标「被覆盖」。
+- **自己判优先级**：同名技能按项目 > DSH > 共享 > 插件包的顺序，只让一份生效，其余标「被覆盖」。插件包的 rank 最低（600），所以你自己放一份同名技能就能盖掉包里的那份。
 - **自己实现开关**：核心没有逐技能开关，所以关掉一个技能时，本插件会向核心 `skills` 服务注册一个低优先级（rank 50）候选，声明该技能**不可被模型或用户调用**——这正是核心本来就在用的语义（`invocation`），模型侧会把它过滤掉。**启用的技能一张候选都不投**，照旧由官方 provider 加载，所以这里解析出错也伤不到正常技能。技能文件一个字节都不改。
 - **自己存状态**：开关和备注写在 `<DSH_HOME>/plugin-rack/profiles/<profile>/skills.json`，原子写入。
 - 面板上：按来源分组列出技能，带搜索、启用/禁用计数、开关、备注、路径、来源、范围、体积估算、调用方式；全部被覆盖的来源组默认折叠。插件页空闲时预热一次扫描并存缓存，打开技能页通常瞬间出列表。
@@ -150,7 +150,9 @@ dsh plugin add dsh-plugin-rack
 | `icon.svg` | 插件图标 |
 | `test/self-check.mjs` | 自检脚本：词条对照、路由对照、hook 顺序、调试残留 |
 | `test/spec.mjs` | 范围算术单测：`^0.2.3` 不含 `0.3.0`、`~1.2.3` 不含 `1.3.0`、预发布版不穿越等边界 |
-| `test/*.mjs` | 行为 / 后台作业 / 下载 / pnpm 启动四套测试 |
+| `lib/skills.js` | 技能扫描、frontmatter 解析、优先级判定、开关策略（不依赖第三方技能插件） |
+| `test/skills.mjs` | 技能扫描与开关策略的测试 |
+| `test/*.mjs` | 行为 / 批量降级 / 客户端 / 后台作业 / 下载 / pnpm 启动等测试 |
 | `scripts/publish.mjs` | 发布脚本：token 只从 `NPM_TOKEN` 读，版本重复直接拒绝 |
 | `eslint.config.js` / `tsconfig.json` | lint 与 `tsc --checkJs`（类型只覆盖 `lib/`） |
 
@@ -253,7 +255,7 @@ POST /api/dsh-plugin-rack/uninstall   { name }
 
 ```bash
 npm ci         # 只装 eslint + typescript（开发依赖，发布包不含 node_modules）
-npm test       # 九套：自检 / 行为 / 范围算术 / 批量降级 / 迁移 / 客户端渲染 / 后台作业 / 下载 / pnpm 启动
+npm test       # 十套：自检 / 行为 / 范围算术 / 批量降级 / 迁移 / 技能 / 客户端渲染 / 后台作业 / 下载 / pnpm 启动
 npm run lint   # eslint（no-dupe-keys、no-undef 在这套配置下抓出过两处真 bug）
 npm run types  # tsc --checkJs，只覆盖 lib/（JSDoc 当类型，不引入构建步骤）
 ```
