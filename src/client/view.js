@@ -302,6 +302,13 @@ function badgeOf(info, src) {
   if (info.outOfRange === true) {
     return { kind: 'outOfRange', label: info.label ?? '', spec: info.spec ?? '' };
   }
+  // A row is only worth an update button when the target differs from what is
+  // installed. The check used to trust hasUpdate alone, so a snapshot taken
+  // while pnpm was still writing node_modules could draw "v0.4.20 ➡ v0.4.20"
+  // and offer a button that had nothing to install.
+  if (typeof info.from === 'string' && info.from !== '' && info.label === info.from) {
+    return src === undefined || src === 'npm' ? { kind: 'none' } : { kind: 'src', label: src };
+  }
   return { kind: 'update', label: info.label ?? '', source: info.source ?? 'npm' };
 }
 
@@ -339,10 +346,18 @@ function updatePageState(updates, checking) {
  * @param {{rows?: Array<object>}|null} extras
  * @returns {number}
  */
-export function updatableTotal(updates, extras) {
+export function updatableTotal(updates, extras, isWatched) {
   const countOf = (answer) => {
     if (answer === null || typeof answer !== 'object' || !Array.isArray(answer.rows)) return 0;
-    return answer.rows.filter((row) => row !== null && typeof row === 'object' && row.hasUpdate === true).length;
+    return answer.rows.filter(
+      (row) =>
+        row !== null &&
+        typeof row === 'object' &&
+        row.hasUpdate === true &&
+        // 一键更新只动勾选过的行。徽标若按「全部可更新」计数，就会和
+        // 「全部更新 (N)」对不上——13 对 12 就是这么来的。
+        (typeof isWatched === 'function' ? isWatched(row.name) === true : true),
+    ).length;
   };
   return countOf(updates) + countOf(extras);
 }

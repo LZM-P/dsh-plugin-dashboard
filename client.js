@@ -765,6 +765,13 @@ function badgeOf(info, src) {
   if (info.outOfRange === true) {
     return { kind: 'outOfRange', label: info.label ?? '', spec: info.spec ?? '' };
   }
+  // A row is only worth an update button when the target differs from what is
+  // installed. The check used to trust hasUpdate alone, so a snapshot taken
+  // while pnpm was still writing node_modules could draw "v0.4.20 ➡ v0.4.20"
+  // and offer a button that had nothing to install.
+  if (typeof info.from === 'string' && info.from !== '' && info.label === info.from) {
+    return src === undefined || src === 'npm' ? { kind: 'none' } : { kind: 'src', label: src };
+  }
   return { kind: 'update', label: info.label ?? '', source: info.source ?? 'npm' };
 }
 
@@ -802,10 +809,18 @@ function updatePageState(updates, checking) {
  * @param {{rows?: Array<object>}|null} extras
  * @returns {number}
  */
-function updatableTotal(updates, extras) {
+function updatableTotal(updates, extras, isWatched) {
   const countOf = (answer) => {
     if (answer === null || typeof answer !== 'object' || !Array.isArray(answer.rows)) return 0;
-    return answer.rows.filter((row) => row !== null && typeof row === 'object' && row.hasUpdate === true).length;
+    return answer.rows.filter(
+      (row) =>
+        row !== null &&
+        typeof row === 'object' &&
+        row.hasUpdate === true &&
+        // 一键更新只动勾选过的行。徽标若按「全部可更新」计数，就会和
+        // 「全部更新 (N)」对不上——13 对 12 就是这么来的。
+        (typeof isWatched === 'function' ? isWatched(row.name) === true : true),
+    ).length;
   };
   return countOf(updates) + countOf(extras);
 }
@@ -2139,8 +2154,19 @@ function jobPhaseKey(phase) {
                 const detail = typeof current.message === 'string' && current.message.length > 0 ? ': ' + current.message : '';
                 setToast({ kind: 'warn', text: t('jobFailed') + detail });
               }
+              // pnpm 返回并不等于 node_modules 已经写完：立刻重查会读到
+              // 安装前的版本号，生成 current === latest 的空更新行（面板上
+              // 表现成 `v0.4.20 ➡ v0.4.20`）。先刷一次别让界面停住，再隔
+              // 几秒补一次，让版本读数落在安装真正完成之后。
               checkUpdates(true);
               load();
+              for (const delay of [3000, 8000]) {
+                setTimeout(() => {
+                  if (!alive) return;
+                  checkUpdates(true);
+                  load();
+                }, delay);
+              }
             } catch (error) {
               // 宿主正在重启时这里会失败，下一跳再试。
               void error;
@@ -2268,7 +2294,14 @@ function jobPhaseKey(phase) {
           { key: 'plugins', title: t('tabPlugins') },
           { key: 'core', title: t('tabCore') },
           { key: 'failed', title: t('tabFailed') },
-          { key: 'updates', title: t('tabUpdates'), badge: updates === null && extras === null ? null : updatableTotal(updates, extras) },
+          // 徽标和「全部更新 (N)」同一个口径：一键更新只动勾选过的行，所以
+          // 徽标也只数这些，否则会出现「更新 13」而按钮写「(12)」。未勾选的
+          // 可更新行仍在更新页的名单里可见（未勾选 + 版本变化）。
+          {
+            key: 'updates',
+            title: t('tabUpdates'),
+            badge: updates === null && extras === null ? null : updatableTotal(updates, extras, inWatched),
+          },
         ].map((page) => ({ ...page, rows: pageRows(page.key) }));
 
         const current = pages.find((page) => page.key === tab) || pages[0];
@@ -2364,6 +2397,8 @@ function jobPhaseKey(phase) {
                 label: 'v' + item.latest,
                 source: 'npm',
                 action: 'npm',
+                // 当前装的是哪一版：badgeOf 用它挡掉 current === latest 的空更新。
+                from: typeof item.current === 'string' ? 'v' + item.current : '',
                 spec: typeof item.spec === 'string' ? item.spec : '',
                 ranged: item.kind !== 'exact',
               });
@@ -2395,6 +2430,7 @@ function jobPhaseKey(phase) {
                 label: 'v' + item.npmLatest,
                 source: sourceOf(item.spec),
                 action: 'pin',
+                from: typeof item.current === 'string' ? 'v' + item.current : '',
               });
             } else if (
               item.kind === 'file' &&
@@ -2408,6 +2444,7 @@ function jobPhaseKey(phase) {
                 label: 'v' + release.version,
                 source: 'github',
                 action: 'file-upgrade',
+                from: typeof item.current === 'string' ? 'v' + item.current : '',
               });
             }
           }

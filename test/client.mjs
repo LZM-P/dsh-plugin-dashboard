@@ -186,8 +186,25 @@ check(CSS.includes('.pd-tag-warn'), 'the switched-off tag reuses the warn tag st
   eq(updatableTotal(null, extras), 1, 'extras alone still produce a count')
   eq(updatableTotal(null, null), 0, 'nothing loaded counts nothing')
   eq(updatableTotal({ rows: [] }, { rows: [] }), 0, 'empty answers count nothing')
+  // 徽标与「全部更新 (N)」同口径：传了勾选判定就只数勾选过的行。
+  eq(updatableTotal(npm, extras, () => false), 0, 'nothing ticked counts nothing on the badge')
+  eq(updatableTotal(npm, extras, () => true), 3, 'everything ticked counts every channel')
+  eq(
+    updatableTotal(npm, extras, (name) => name === 'a' || name === 'd'),
+    2,
+    'the badge counts only the rows the one-click button would act on',
+  )
   const panel = readFileSync(join('src', 'client', 'panel.js'), 'utf8')
-  check(panel.includes('updatableTotal(updates, extras)'), 'the badge uses the merged count, not updates.updates')
+  check(panel.includes('updatableTotal(updates, extras, inWatched)'), 'the badge uses the ticked count, matching the button')
+  check(panel.includes('const updateRankOf = (name) =>'), 'the update page still ranks rows by what needs doing')
+}
+
+// ── a row is only an update when the target actually differs ─────────────────
+{
+  eq(badgeOf({ label: 'v0.4.20', from: 'v0.4.20', source: 'npm' }, 'npm').kind, 'none', 'a same-version move is not an update button')
+  eq(badgeOf({ label: 'v0.4.21', from: 'v0.4.20', source: 'npm' }, 'npm').kind, 'update', 'a real version move is an update button')
+  eq(badgeOf({ label: 'v0.4.21', source: 'npm' }, 'npm').kind, 'update', 'a row without a from value still shows the update')
+  eq(badgeOf({ label: 'v0.4.20', from: 'v0.4.20', source: 'github' }, 'link').kind, 'src', 'a same-version github row falls back to its source tag')
 }
 
 // ── the banner names the phase the host is in ───────────────────────────────

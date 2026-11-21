@@ -1975,12 +1975,19 @@ async function checkUpdates(ctx) {
         // An exact pin has no range to violate. Anything else does, and a
         // major bump the user's own `^`/`~` excludes is not this panel's call.
         const inRange = target.kind === 'exact' || satisfiesSpec(latest, target.spec)
+        // Same version on both sides is never an update. A check that runs
+        // while pnpm is still writing node_modules reads the pre-install
+        // version as "current", which used to produce rows like
+        // v0.4.20 ➡ v0.4.20 that the panel then drew as an update button.
         rows[index] = {
           name: target.name,
           current: target.current,
           latest,
           spec: target.spec,
           kind: target.kind,
+          // `ahead` already means strictly greater, so equal versions fall through
+          // to false on both. Keeping the name explicit: a same-version row is
+          // neither an update nor an out-of-range newer release.
           hasUpdate: ahead && inRange,
           outOfRange: ahead && !inRange,
           error: null,
