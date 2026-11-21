@@ -55,6 +55,34 @@
       return data;
     }
 
+    // 技能页的数据与开关都来自本插件自己的宿主半边
+    // （/api/dsh-plugin-rack/skills），不经过任何第三方插件：扫描、
+    // frontmatter 解析、同名优先级、开关存储全在 lib/skills.js。
+    // 技能页的数据和开关都来自本插件自己的宿主半边（/api/dsh-plugin-rack/skills），
+    // 不经过任何第三方插件：扫描、frontmatter 解析、开关存储都在 lib/skills.js。
+    const SKILLS_SNAPSHOT_KEY = 'plugin-rack:skills-snapshot';
+    const SKILLS_FETCHED_KEY = 'plugin-rack:skills-fetched-at';
+    // 面板关掉再打开会重建组件，ref 就丢了；这两个戳存在 localStorage 里，
+    // 跨挂载也认「本会话已经扫过 / 已经预取过」。
+    function readStamp(key) {
+      try {
+        const raw = window.localStorage.getItem(key);
+        return raw === null ? 0 : Number(raw) || 0;
+      } catch (failure) {
+        void failure;
+        return 0;
+      }
+    }
+    function writeStamp(key, value) {
+      try {
+        window.localStorage.setItem(key, String(value));
+      } catch (failure) {
+        void failure;
+      }
+    }
+    // 一次扫描结果在 10 分钟内算新鲜：面板反复开关不该每次都重扫。
+    const SKILLS_FRESH_MS = 10 * 60 * 1000;
+
     function SidebarIcon(props) {
       const size = props && typeof props.size === 'number' ? props.size : 18;
       return h(
@@ -156,6 +184,8 @@
         const [filter, setFilter] = React.useState('all');
         const [query, setQuery] = React.useState('');
         const [tab, setTab] = React.useState('plugins');
+        // 「技能」是另一页而不是页签：view 决定整个面板画插件页还是技能页。
+        const [view, setView] = React.useState('plugins');
         const [collapsed, setCollapsed] = React.useState({ 'plugins': false, 'core': true, 'core-off': true, 'failed': false });
         const [expanded, setExpanded] = React.useState({});
         const [details, setDetails] = React.useState({});
@@ -182,6 +212,13 @@
         const [job, setJob] = React.useState(null);
         // 已经下好、只等会话空闲就会自己装上的那些更新。
         const [queued, setQueued] = React.useState([]);
+        // 技能页签：列表与开关都来自 skills-manager 的 /state 快照；
+        // 数据来自本站自己的 /skills 路由；出错只可能是宿主没回答。
+        const [skillsData, setSkillsData] = React.useState(null);
+        const [skillsError, setSkillsError] = React.useState(null);
+        const [skillsLoading, setSkillsLoading] = React.useState(false);
+        const [skillsQuery, setSkillsQuery] = React.useState('');
+        const [skillsFilter, setSkillsFilter] = React.useState('all');
 
         // 展开过的行，详情只取一次并缓存；但列表一刷新（装了一个、卸了一个、
         // 升级了一个），缓存里那份的版本号与描述就全过时了，所以 load() 会把缓存
@@ -258,6 +295,112 @@
           }
           load();
         }, [load]);
+
+        const loadSkills = React.useCallback(async (quiet) => {
+          if (quiet !== true) setSkillsLoading(true);
+          try {
+            const snap = await request('/skills', undefined, { timeoutMs: SKILL_SCAN_TIMEOUT_MS });
+            setSkillsData(snap);
+            setSkillsError(null);
+            writeStamp(SKILLS_FETCHED_KEY, Date.now());
+            try {
+              window.localStorage.setItem(SKILLS_SNAPSHOT_KEY, JSON.stringify(snap));
+            } catch (failure) {
+              // 存不下（配额满、隐私模式）就算了，下次照样要扫一遍。
+              void failure;
+            }
+          } catch (failure) {
+            setSkillsError(failure instanceof Error ? failure : new Error(String(failure)));
+            if (quiet !== true) setSkillsData(null);
+          } finally {
+            setSkillsLoading(false);
+          }
+        }, []);
+
+        const toggleSkill = React.useCallback(
+          async (root, skill, next) => {
+            const key = 'skill:' + root.key + '/' + skill.name;
+            if (pending[key] === true) return;
+            setPending((prev) => ({ ...prev, [key]: true }));
+            try {
+              const snap = await request(
+                '/skills/toggle',
+                { name: skill.name, enabled: next },
+                { timeoutMs: SKILL_SCAN_TIMEOUT_MS },
+              );
+              setSkillsData(snap);
+              setSkillsError(null);
+              setToast({
+                kind: 'ok',
+                text: t(next ? 'skillEnabled' : 'skillDisabled') + ' · ' + skill.name,
+              });
+            } catch (failure) {
+              setToast({
+                kind: 'err',
+                text:
+                  t('skillToggleFailed') +
+                  ' · ' +
+                  String(failure && failure.message ? failure.message : failure),
+              });
+            } finally {
+              setPending((prev) => {
+                const nextMap = { ...prev };
+                delete nextMap[key];
+                return nextMap;
+              });
+            }
+          },
+          [pending, t],
+        );
+
+        // 只在技能页真正被打开时才问 manager 要 /state：它要扫遍本机所有
+        // agent 技能根，实测 2 秒上下，不该每次开面板都付这份钱（这也是插件页
+        // 一直秒开的原因）。
+        // 打开时先画上一次的扫描结果，再在后台重扫：有缓存时列表立刻出现，
+        // 没有缓存（第一次用）才显示「加载中」。重扫失败保留旧列表 + 一条提示。
+        // 同一会话内反复切页不重扫，要重扫点顶栏刷新。
+        // skillsFetched：本会话是否已经发过请求（预取也算），避免预取完再打开
+        // 又扫第二遍。skillsLoading 只在技能页显示成「加载中」，插件页不受影响，
+        // 所以预取走非静默路径：用户在预取途中打开技能页能看见真实的加载态。
+        const skillsFetched = React.useRef(false);
+        const skillsPrefetched = React.useRef(false);
+        React.useEffect(() => {
+          if (view !== 'plugins' || skillsPrefetched.current) return;
+          skillsPrefetched.current = true;
+          // 最近 10 分钟内扫过就不必再预热，省掉一次全盘读。
+          if (Date.now() - readStamp(SKILLS_FETCHED_KEY) < SKILLS_FRESH_MS) return;
+          const run = () => {
+            if (skillsFetched.current) return;
+            skillsFetched.current = true;
+            void loadSkills();
+          };
+          const timer = setTimeout(run, 1200);
+          return () => clearTimeout(timer);
+        }, [view, loadSkills]);
+        React.useEffect(() => {
+          if (view !== 'skills') return;
+          let hadCache = false;
+          if (skillsData === null) {
+            try {
+              const saved = window.localStorage.getItem(SKILLS_SNAPSHOT_KEY);
+              if (saved !== null && saved !== '') {
+                const parsed = JSON.parse(saved);
+                if (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.roots)) {
+                  setSkillsData(parsed);
+                  hadCache = true;
+                }
+              }
+            } catch (failure) {
+              void failure;
+            }
+          }
+          if (skillsFetched.current) return;
+          // 只有手里已经有缓存时，才算「刚扫过，不必再扫」；没缓存就必须扫，
+          // 否则技能页会停在「加载中」上。
+          if (hadCache && Date.now() - readStamp(SKILLS_FETCHED_KEY) < SKILLS_FRESH_MS) return;
+          skillsFetched.current = true;
+          void loadSkills(hadCache);
+        }, [view, skillsData, loadSkills]);
 
         // load() 清掉了详情缓存，把仍然展开着的行重新取一遍，别让它们停在空白上。
         // 依赖里带上 details，是为了在“缓存被清空”的那一次渲染后立刻补回来。
@@ -1753,8 +1896,18 @@
             h(
               'span',
               { className: 'pd-update-main' },
-              h('span', { className: 'pd-update-name' }, row.name),
-              typeof spec === 'string' && kind !== 'exact' ? h('code', { className: 'pd-update-spec' }, spec) : null,
+              h(
+                'span',
+                { className: 'pd-update-line' },
+                h('span', { className: 'pd-update-name' }, row.name),
+                typeof spec === 'string' && kind !== 'exact' ? h('code', { className: 'pd-update-spec' }, spec) : null,
+                fresh ? h('span', { className: 'pd-update-tag' }, t('updateTagNew')) : null,
+              ),
+              // 中文名与说明：主列表每行都有这一行副标题，更新页一度只有裸包名，
+              // 两边看起来不像一套界面。没写说明、或说明就是包名本身时不占位。
+              typeof row.description === 'string' && row.description !== '' && row.description !== row.name
+                ? h('span', { className: 'pd-update-sub', title: row.description }, row.description)
+                : null,
             ),
             // 右半只有两种形态：有新版就报「从 → 到」（目标版本是重点），
             // 没有就一行淡字。没有中间状态，就不会出现 0.16.0 → 0.16.0。
@@ -1911,12 +2064,22 @@
             // 这一页列出所有插件，而不是只列「有新版」的那几个：勾选是设置在
             // 先，装包在后，用户得能看到完整名单才能决定谁参与一键更新。
             const all = Array.isArray(data.rows) ? data.rows : [];
+            // updateBy 里每个「查过」的包都有一行，所以 has() 只说明查过、不代表
+            // 有新版，拿它排序会退化成纯字母序。真正排前面的是 hasUpdate，其次是
+            // 有新版但超出本插件版本范围的那一行，其余按名字。
+            const updateRankOf = (name) => {
+              const info = updateBy.get(name) || extraBy.get(name) || null;
+              if (info === null) return 2;
+              if (info.hasUpdate === true) return 0;
+              if (info.outOfRange === true) return 1;
+              return 2;
+            };
             const rows = all
               .filter((row) => row.manageable === true && row.self !== true && isPlugin(row))
               .sort((left, right) => {
-                const leftFresh = updateBy.has(left.name) ? 0 : 1;
-                const rightFresh = updateBy.has(right.name) ? 0 : 1;
-                if (leftFresh !== rightFresh) return leftFresh - rightFresh;
+                const leftRank = updateRankOf(left.name);
+                const rightRank = updateRankOf(right.name);
+                if (leftRank !== rightRank) return leftRank - rightRank;
                 return left.name.localeCompare(right.name);
               });
             const known = new Set(rows.map((row) => row.name));
@@ -2092,6 +2255,329 @@
               ),
         );
 
+        // 数据形状见 lib/skills.js skillSnapshot()：roots[].skills[] 已按
+        // 优先级定过 winner / shadowedBy，并叠加了本插件自己的开关状态。
+        const skillRoots =
+          skillsData === null || !Array.isArray(skillsData.roots) ? [] : skillsData.roots;
+        const skillRootLabel = (key) => {
+          const found = skillRoots.find((root) => root.key === key);
+          return found ? found.label || found.key : key;
+        };
+        const skillNeedle = skillsQuery.trim().toLowerCase();
+        const skillMatches = (skill) => {
+          if (skillNeedle === '') return true;
+          const hay =
+            skill.name + ' ' + (skill.description || '') + ' ' + (skill.customNote || '');
+          return hay.toLowerCase().indexOf(skillNeedle) >= 0;
+        };
+        const skillStateOk = (skill) => {
+          if (skillsFilter === 'enabled') return skill.enabled === true;
+          if (skillsFilter === 'disabled') return skill.enabled !== true;
+          return true;
+        };
+        const skillGroups = skillRoots
+          .filter((root) => root.exists !== false && (root.skills || []).length > 0)
+          .map((root) => ({
+            root,
+            skills: (root.skills || [])
+              .filter((skill) => skillMatches(skill) && skillStateOk(skill))
+              .sort((a, b) => a.name.localeCompare(b.name)),
+          }))
+          .filter((group) => group.skills.length > 0);
+        const skillShown = skillGroups.reduce((n, group) => n + group.skills.length, 0);
+        const skillCounts = { total: 0, on: 0, off: 0 };
+        for (const root of skillRoots) {
+          for (const skill of root.skills || []) {
+            skillCounts.total += 1;
+            if (skill.enabled === true) skillCounts.on += 1;
+            else skillCounts.off += 1;
+          }
+        }
+        const skillStat = (key, content) =>
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'pd-stat' + (skillsFilter === key ? ' pd-stat-on' : ''),
+              'aria-pressed': skillsFilter === key,
+              onClick: () => setSkillsFilter(skillsFilter === key ? 'all' : key),
+            },
+            content,
+          );
+        const skillsStats = h(
+          'div',
+          { className: 'pd-stats' },
+          skillStat('all', [h('b', { key: 'n' }, String(skillCounts.total)), ' ' + t('unitSkills')]),
+          skillStat('enabled', [t('on') + ' ', h('b', { key: 'n' }, String(skillCounts.on))]),
+          skillStat('disabled', [t('off') + ' ', h('b', { key: 'n' }, String(skillCounts.off))]),
+          skillShown === skillCounts.total
+            ? null
+            : h('span', null, t('shown') + ' ', h('b', null, String(skillShown))),
+          h('input', {
+            className: 'pd-input',
+            type: 'search',
+            value: skillsQuery,
+            placeholder: t('skillsSearch'),
+            onChange: (event) => setSkillsQuery(event.target.value),
+          }),
+        );
+        const skillRowNode = (root, skill) => {
+          const key = root.key + '/' + skill.name;
+          const isOpen = expanded['skill:' + key] === true;
+          const readonly = root.writable === false;
+          const blocked =
+            readonly || !!skill.shadowedBy || skill.loadable === false || root.enabled === false;
+          const dotState =
+            skill.loadable === false ? 'failed' : skill.enabled === true ? 'running' : 'off';
+          const dotLabel =
+            dotState === 'failed'
+              ? t('skillInvalid')
+              : dotState === 'running'
+                ? t('phaseActive')
+                : t('phaseOff');
+          const tags = [];
+          if (skill.shadowedBy) {
+            tags.push(
+              h(
+                'span',
+                {
+                  key: 'sh',
+                  className: 'pd-tag pd-tag-warn',
+                  title: t('skillShadowedBy', { source: skillRootLabel(skill.shadowedBy.rootKey) }),
+                },
+                t('skillShadowed'),
+              ),
+            );
+          }
+          if (skill.loadable === false) {
+            tags.push(h('span', { key: 'inv', className: 'pd-tag pd-tag-err' }, t('skillInvalid')));
+          }
+          if (skill.linked === true) tags.push(h('span', { key: 'lnk', className: 'pd-tag' }, t('skillLinked')));
+          if (readonly) tags.push(h('span', { key: 'ro', className: 'pd-tag' }, t('readOnly')));
+          const toggleExpand = () =>
+            setExpanded((prev) => ({ ...prev, ['skill:' + key]: !isOpen }));
+          const invocKind =
+            skill.effectiveModelInvocable === false && skill.effectiveUserInvocable === false
+              ? 'invocNone'
+              : skill.effectiveModelInvocable === false
+                ? 'invocManual'
+                : 'invocAll';
+          // 自己扫描时只统计了正文字节数；按经验 1 token ≈ 4 字节粗估，
+          // 这里只当「这技能有多大」的参考，不冒充精确分词。
+          const tokenTotal =
+            typeof skill.bodyBytes === 'number' ? Math.round(skill.bodyBytes / 4) : null;
+          return h(
+            'div',
+            { className: 'pd-item', key },
+            h(
+              'div',
+              {
+                className: 'pd-row' + (isOpen ? ' pd-row-open' : ''),
+                onClick: toggleExpand,
+              },
+              h('span', {
+                className: 'pd-dot-status pd-dot-' + dotState,
+                title: dotLabel,
+                'aria-label': dotLabel,
+              }),
+              h(
+                'div',
+                { className: 'pd-name' },
+                h('div', { className: 'pd-name-main pd-name-fixed', title: skill.path }, skill.name),
+                h(
+                  'div',
+                  { className: 'pd-name-sub', title: skill.description || '' },
+                  skill.description || t('skillNoDesc'),
+                ),
+                tags.length > 0 ? h('div', { className: 'pd-tags' }, tags) : null,
+              ),
+              h(
+                'div',
+                { className: 'pd-cell pd-cell-power', onClick: (event) => event.stopPropagation() },
+                h(PowerSwitch, {
+                  checked: skill.enabled === true,
+                  pending: pending['skill:' + key] === true,
+                  disabled: blocked,
+                  label: t('skillToggle') + ' ' + (skill.name),
+                  onChange: (next) => void toggleSkill(root, skill, next),
+                }),
+              ),
+              // 技能没有「自动/手动」与卸载两列：占位保住行网格几何。
+              h('span'),
+              h('span'),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'pd-row-chev',
+                  'data-collapsed': isOpen ? 'false' : 'true',
+                  'aria-expanded': isOpen,
+                  'aria-label': t('detail'),
+                  title: t('detail'),
+                  onClick: (event) => {
+                    event.stopPropagation();
+                    toggleExpand();
+                  },
+                },
+                h(
+                  'svg',
+                  { width: 12, height: 12, viewBox: '0 0 12 12', fill: 'none', 'aria-hidden': true },
+                  h('path', {
+                    d: 'M2 4.2 L6 8 L10 4.2',
+                    stroke: 'currentColor',
+                    strokeWidth: 1.4,
+                    strokeLinecap: 'round',
+                    strokeLinejoin: 'round',
+                  }),
+                ),
+              ),
+            ),
+            isOpen
+              ? h(
+                  'div',
+                  { className: 'pd-detail' },
+                  h(
+                    'div',
+                    { className: 'pd-fact' },
+                    h('span', { className: 'pd-fact-k' }, t('skillPath')),
+                    h('span', { className: 'pd-fact-v', title: skill.path }, skill.path),
+                  ),
+                  h(
+                    'div',
+                    { className: 'pd-fact' },
+                    h('span', { className: 'pd-fact-k' }, t('skillRoot')),
+                    h('span', { className: 'pd-fact-v' }, root.label || root.key),
+                  ),
+                  h(
+                    'div',
+                    { className: 'pd-fact' },
+                    h('span', { className: 'pd-fact-k' }, t('skillScope')),
+                    h(
+                      'span',
+                      { className: 'pd-fact-v' },
+                      t(root.scope === 'project' ? 'scopeProject' : 'scopeUser'),
+                    ),
+                  ),
+                  tokenTotal === null
+                    ? null
+                    : h(
+                        'div',
+                        { className: 'pd-fact' },
+                        h('span', { className: 'pd-fact-k' }, t('skillTokens')),
+                        h('span', { className: 'pd-fact-v' }, '≈' + tokenTotal.toLocaleString()),
+                      ),
+                  h(
+                    'div',
+                    { className: 'pd-fact' },
+                    h('span', { className: 'pd-fact-k' }, t('skillInvocation')),
+                    h('span', { className: 'pd-fact-v' }, t(invocKind)),
+                  ),
+                  skill.customNote
+                    ? h(
+                        'div',
+                        { className: 'pd-fact pd-fact-block' },
+                        h('span', { className: 'pd-fact-k' }, t('skillNote')),
+                        h('span', { className: 'pd-fact-v pd-desc' }, skill.customNote),
+                      )
+                    : null,
+                  skill.shadowedBy
+                    ? h(
+                        'div',
+                        { className: 'pd-fact pd-fact-block' },
+                        h('span', { className: 'pd-fact-k' }, t('skillShadowed')),
+                        h(
+                          'span',
+                          { className: 'pd-fact-v' },
+                          t('skillShadowedBy', { source: skillRootLabel(skill.shadowedBy.rootKey) }),
+                        ),
+                      )
+                    : null,
+                  skill.problem
+                    ? h(
+                        'div',
+                        { className: 'pd-fact pd-fact-block' },
+                        h('span', { className: 'pd-fact-k' }, t('skillDiagnostics')),
+                        h('span', { className: 'pd-fact-v' }, String(skill.problem)),
+                      )
+                    : null,
+                )
+              : null,
+          );
+        };
+        const skillGroupNode = (group) => {
+          const collapseKey = 'skills:' + group.root.key;
+          // 全是重复副本的来源（例如 ~/.codex/skills 里的旧拷贝）默认折叠：
+          // 它们在这里点不了开关，展开只是信息，不该占满整页。
+          const allShadowed = group.skills.every((skill) => !!skill.shadowedBy);
+          const explicit = collapsed[collapseKey];
+          const isCollapsed = explicit === undefined ? allShadowed : explicit === true;
+          return h(
+            'div',
+            { className: 'pd-group', key: group.root.key },
+            h(
+              'div',
+              { className: 'pd-group-head', 'data-collapsed': isCollapsed ? 'true' : 'false' },
+              h(
+                'div',
+                { className: 'pd-title-row' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'pd-chevron',
+                    'data-collapsed': isCollapsed ? 'true' : 'false',
+                    'aria-expanded': !isCollapsed,
+                    'aria-label': group.root.label || group.root.key,
+                    onClick: () =>
+                      setCollapsed((prev) => ({ ...prev, [collapseKey]: !isCollapsed })),
+                  },
+                  h(
+                    'svg',
+                    { width: 12, height: 12, viewBox: '0 0 12 12', 'aria-hidden': true },
+                    h('path', {
+                      d: 'M2 4.2 L6 8 L10 4.2',
+                      fill: 'none',
+                      stroke: 'currentColor',
+                      strokeWidth: 1.4,
+                      strokeLinecap: 'round',
+                      strokeLinejoin: 'round',
+                    }),
+                  ),
+                ),
+                h('div', { className: 'pd-group-title' }, group.root.label || group.root.key),
+                h('div', { className: 'pd-group-count' }, String(group.skills.length)),
+              ),
+              h(
+                'div',
+                { className: 'pd-group-note', title: group.root.path },
+                group.root.path + (allShadowed ? ' · ' + t('skillShadowed') : ''),
+              ),
+            ),
+            isCollapsed ? null : h('div', null, group.skills.map((skill) => skillRowNode(group.root, skill))),
+          );
+        };
+        // 有缓存就先画列表：重扫失败也只是旧数据 + 一行提示，不该把已有内容替换成错误页。
+        const skillsStale =
+          skillsError !== null && skillsData !== null
+            ? h(
+                'div',
+                { className: 'pd-toast pd-toast-warn' },
+                t('skillsStale') + ' · ' + String(skillsError.message),
+              )
+            : null;
+        const skillsPanel =
+          skillsData !== null
+            ? skillGroups.length === 0
+              ? h('div', null, skillsStale, h('div', { className: 'pd-empty' }, t('skillsEmpty')))
+              : h('div', null, skillsStale, skillGroups.map(skillGroupNode))
+            : skillsError !== null
+              ? h(
+                  'div',
+                  { className: 'pd-empty' },
+                  t('skillsLoadFailed') + ' · ' + String(skillsError.message),
+                )
+              : h('div', { className: 'pd-empty' }, t('loading'));
+
         return h(
           'div',
           { className: 'pd-root' },
@@ -2108,8 +2594,39 @@
                 h(
                   'div',
                   null,
-                  h('div', { className: 'pd-title' }, t('title')),
-                  h('div', { className: 'pd-sub' }, t('subtitle')),
+                  h('div', { className: 'pd-title' }, view === 'skills' ? t('titleSkills') : t('title')),
+                  h('div', { className: 'pd-sub' }, view === 'skills' ? t('subtitleSkills') : t('subtitle')),
+                  // 「技能」不放页签条：它是另一页，入口是标题下一层的灰底分段。
+                  // 分段常驻，所以技能页上也能一眼看到怎么回插件页。
+                  h(
+                    'div',
+                    { className: 'pd-views', role: 'group', 'aria-label': t('title') },
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'pd-view' + (view === 'plugins' ? ' pd-view-on' : ''),
+                        'aria-pressed': view === 'plugins',
+                        onClick: () => setView('plugins'),
+                      },
+                      t('viewPlugins'),
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'pd-view' + (view === 'skills' ? ' pd-view-on' : ''),
+                        'aria-pressed': view === 'skills',
+                        onClick: () => setView('skills'),
+                      },
+                      t('viewSkills'),
+                      skillsData !== null &&
+                      skillsData.summary &&
+                      typeof skillsData.summary.total === 'number'
+                        ? h('span', { className: 'pd-view-n' }, String(skillsData.summary.total))
+                        : null,
+                    ),
+                  ),
                 ),
                 h(
                   'div',
@@ -2159,36 +2676,47 @@
             h(
               'div',
               { className: 'pd-bar' },
-              h(
-                'div',
-                { className: 'pd-tabs', role: 'tablist', 'aria-label': t('title') },
-                pages.map((page) =>
-                  h(
-                    'button',
-                    {
-                      key: page.key,
-                      type: 'button',
-                      role: 'tab',
-                      className: 'pd-tab' + (tab === page.key ? ' pd-tab-on' : ''),
-                      'aria-selected': tab === page.key,
-                      onClick: () => setTab(page.key),
-                    },
-                    page.title,
-                    (() => {
-                      const badge =
-                        page.badge === undefined ? page.rows.length : page.badge;
-                      return badge === null
-                        ? null
-                        : h('span', { className: 'pd-tab-n' }, String(badge));
-                    })(),
-                  ),
-                ),
-              ),
-              h('span', { className: 'pd-sep' }),
+              view === 'plugins'
+                ? h(
+                    'div',
+                    { className: 'pd-tabs', role: 'tablist', 'aria-label': t('title') },
+                    pages.map((page) =>
+                      h(
+                        'button',
+                        {
+                          key: page.key,
+                          type: 'button',
+                          role: 'tab',
+                          className: 'pd-tab' + (tab === page.key ? ' pd-tab-on' : ''),
+                          'aria-selected': tab === page.key,
+                          onClick: () => setTab(page.key),
+                        },
+                        page.title,
+                        (() => {
+                          const badge =
+                            page.badge === undefined ? page.rows.length : page.badge;
+                          return badge === null
+                            ? null
+                            : h('span', { className: 'pd-tab-n' }, String(badge));
+                        })(),
+                      ),
+                    ),
+                  )
+                : null,
+              view === 'plugins' ? h('span', { className: 'pd-sep' }) : null,
               // 顶栏不再放「全部更新」：它和「一键全部开启/关闭」并排时太容易
               // 点错，而且主列表的组标题栏里已经有一个了。
-              h('button', { type: 'button', className: 'pd-btn', disabled: busy, onClick: load }, t('refresh')),
-              busy
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'pd-btn',
+                  disabled: view === 'skills' ? skillsLoading : busy,
+                  onClick: view === 'skills' ? () => void loadSkills() : load,
+                },
+                t('refresh'),
+              ),
+              (view === 'skills' ? skillsLoading : busy)
                 ? h(
                     'span',
                     { className: 'pd-tag pd-tag-warn pd-tag-busy' },
@@ -2197,7 +2725,7 @@
                   )
                 : null,
             ),
-            job !== null && job.running === true
+            view === 'plugins' && job !== null && job.running === true
               ? h(
                   'div',
                   { className: 'pd-jobbar' },
@@ -2229,7 +2757,7 @@
                         t('queuedNote', { n: String(queued.length) }) + ' · ' + queued.join(', '),
                       ),
                 )
-              : queued.length > 0
+              : view === 'plugins' && queued.length > 0
                 ? h(
                     'div',
                     { className: 'pd-jobbar' },
@@ -2242,9 +2770,11 @@
                   )
                 : null,
           ),
-          tab === 'updates'
-            ? null
-            : h(
+          view === 'skills'
+            ? skillsStats
+            : tab === 'updates'
+              ? null
+              : h(
                 'div',
                 { className: 'pd-stats' },
                 statItem('all', [h('b', { key: 'n' }, String(counts.total)), ' ' + t('unitPlugins')]),
@@ -2319,16 +2849,20 @@
                 ),
               )
             : null,
-          tab === 'updates'
+          view === 'skills'
+            ? skillsPanel
+            : tab === 'updates'
             ? h('div', null, installPanel, updatePanel)
             : groups.length === 0
               ? h('div', { className: 'pd-empty' }, t('empty'))
               : groups.map(groupNode),
-          h(
-            'div',
-            { className: 'pd-foot' },
-            t('persisted') + ' ' + data.statePath + (data.storage === 'memory' ? ' ' + t('memoryOnly') : ''),
-          ),
+          view === 'skills'
+            ? null
+            : h(
+                'div',
+                { className: 'pd-foot' },
+                t('persisted') + ' ' + data.statePath + (data.storage === 'memory' ? ' ' + t('memoryOnly') : ''),
+              ),
             ),
           ),
         );

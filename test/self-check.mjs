@@ -76,8 +76,12 @@ console.log('routes')
   // The header comment lists the routes as "GET  /api/dsh-plugin-rack/<path>".
   const header = index.slice(0, index.indexOf('*/'))
   const documented = new Set()
-  for (const match of header.matchAll(/\b(GET|POST)\s+\/api\/dsh-plugin-rack\/([a-z]*)/g)) {
-    documented.add(match[1].toUpperCase() + ' /' + match[2])
+  // Paths may nest (`/skills/toggle`), so the capture has to allow a slash:
+  // with a plain [a-z]* this check silently accepted "documented" sub-routes
+  // that it had actually truncated to their first segment.
+  // A bare prefix (trailing slash then whitespace) documents the root route.
+  for (const match of header.matchAll(/\b(GET|POST)\s+\/api\/dsh-plugin-rack\/([a-z-]+(?:\/[a-z-]+)*)?/g)) {
+    documented.add(match[1].toUpperCase() + ' /' + (match[2] ?? ''))
   }
   const missing = [...routes].filter((route) => !documented.has(route))
   check('header comment lists every route', missing.length === 0, missing.join(', '))

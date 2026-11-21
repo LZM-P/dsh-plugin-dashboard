@@ -1,4 +1,7 @@
     const DEFAULT_TIMEOUT_MS = 120000;
+    // 技能扫描要逐个读 SKILL.md，比普通 GET 慢；但再慢也不该无限等，
+    // 卡住时让面板自己报错比一直转圈强。
+    const SKILL_SCAN_TIMEOUT_MS = 30000;
 
     /**
      * 一次失败的写操作该显示什么。
@@ -358,4 +361,4 @@ export function jobPhaseKey(phase) {
   return null;
 }
 
-export { DEFAULT_TIMEOUT_MS, WRITE_TIMEOUT_MS, failureOutcome, sameEnabledMap, partitionTargets, mergeUpdateReport, renderUpdateReport, failureEntry, collectFailures, badgeOf, updatePageState }
+export { DEFAULT_TIMEOUT_MS, SKILL_SCAN_TIMEOUT_MS, WRITE_TIMEOUT_MS, failureOutcome, sameEnabledMap, partitionTargets, mergeUpdateReport, renderUpdateReport, failureEntry, collectFailures, badgeOf, updatePageState }

@@ -211,6 +211,13 @@ check(CSS.includes('.pd-tag-warn'), 'the switched-off tag reuses the warn tag st
   check(panel.includes('const updateCandidates = (() =>'), 'the bulk list is derived, not stored twice')
   check(panel.includes('const updateRoster ='), 'the update roster is a separate list')
   check(panel.includes('info.hasUpdate === true'), 'a row with nothing to install is not drawn as a version move')
+  check(panel.includes('const updateRankOf = (name) =>'), 'the roster ranks a row by whether it has a newer version')
+  check(panel.includes('updateRankOf(left.name)'), 'the roster order uses that rank, not the bare name')
+  check(panel.includes('info.outOfRange === true'), 'a version out of range ranks just below the new ones')
+  check(panel.includes('row.description !== row.name'), 'a package whose description is its own name takes no subtitle')
+  check(panel.includes("t('updateTagNew')"), 'a newer row carries a short badge')
+  check(CSS.includes('.pd-update-sub'), 'the description subtitle is styled')
+  check(CSS.includes('.pd-update-tag'), 'the newer badge is styled')
   check(!panel.includes('pd-update-meta'), 'no empty meta tag is rendered next to the name')
   check(panel.includes('const isWatched = (row)'), 'watching a plugin for updates is not the same as 自动')
   check(panel.includes("entryId: row.entryId, update }"), 'the update roster is written through its own field')
@@ -225,6 +232,46 @@ check(CSS.includes('.pd-tag-warn'), 'the switched-off tag reuses the warn tag st
   check(panel.includes('applyUpdates([next]);'), 'the queue drains through the same update path')
   check(panel.includes("t('queueHint')"), 'the pill explains that it will queue')
   check(panel.includes('const jobRunning = job !== null'), 'the update job flag is separate from the bulk flag')
+}
+// ── the skills page is the rack's own, not a bridge to another plugin ───────
+{
+  const panel = readFileSync(join('src', 'client', 'panel.js'), 'utf8')
+  const host = readFileSync(join('index.js'), 'utf8')
+  check(!panel.includes('dsh-skills-manager'), 'the client never mentions another skills plugin')
+  check(!panel.includes('mgrRequest'), 'the client has no third-party request helper')
+  check(panel.includes("await request('/skills'"), 'the panel reads skills from its own host route')
+  check(panel.includes("'/skills/toggle'"), 'the switch writes the rack own state')
+  check(host.includes("path === '/skills'"), 'the host serves the skill list itself')
+  check(host.includes("path === '/skills/toggle'"), 'the host owns the skill switch')
+  check(host.includes('createSkillPolicyProvider'), 'the host plugs a provider into the core skills service')
+  check(host.includes("ctx.get('skills')"), 'the provider goes through the shipped service, not a private one')
+  check(!panel.includes("key: 'skills'"), 'skills is not a tab in the plugin page bar')
+  check(panel.includes("setView('skills')"), 'skills is its own page, opened from a switcher')
+  check(panel.includes("className: 'pd-views'"), 'the skills entry is a grey switcher under the title')
+  check(panel.includes("view === 'skills' ? t('titleSkills') : t('title')"), 'the header title follows the page')
+  check(panel.includes('const loadSkills = React.useCallback'), 'skills state loads through its own callback')
+  check(panel.includes('const skillsFetched = React.useRef(false)'), 'a prefetched scan is not repeated when the page opens')
+  check(panel.includes('const timer = setTimeout(run, 1200)'), 'the prefetch is deferred so it does not race the plugin list')
+  check(panel.includes("const SKILLS_SNAPSHOT_KEY = 'plugin-rack:skills-snapshot'"), 'the last scan is cached so the page paints instantly')
+  check(panel.includes('void loadSkills(hadCache)'), 'a cached paint stays quiet instead of showing the loading pill over old data')
+  check(panel.includes("t('skillsStale')"), 'a failed rescan keeps the old list and says so')
+  check(panel.includes('root.writable === false'), 'read-only roots keep their switch disabled')
+  check(panel.includes('!!skill.shadowedBy || skill.loadable === false || root.enabled === false'), 'shadowed/unloadable skills cannot be toggled')
+  check(panel.includes("typeof skillsData.summary.total === 'number'"), 'the switcher count survives a snapshot without summary')
+  check(panel.includes('group.skills.every((skill) => !!skill.shadowedBy)'), 'a root made only of shadowed copies starts collapsed')
+  check(panel.includes('pd-name-main pd-name-fixed'), 'a long skill name keeps its width instead of being squeezed by the description')
+  const skillKeys = [
+    'titleSkills', 'subtitleSkills', 'viewPlugins', 'viewSkills', 'unitSkills', 'skillsSearch', 'skillsEmpty',
+    'skillsLoadFailed', 'skillsStale', 'skillEnabled', 'skillDisabled',
+    'skillToggleFailed', 'skillToggle', 'skillNoDesc', 'skillPath', 'skillRoot', 'skillScope',
+    'scopeUser', 'scopeProject', 'skillTokens', 'skillInvocation', 'invocAll',
+    'invocManual', 'invocNone', 'skillNote', 'skillShadowed', 'skillShadowedBy',
+    'skillLinked', 'skillInvalid', 'skillDiagnostics',
+  ]
+  for (const key of skillKeys) {
+    check(typeof DICT.en[key] === 'string' && DICT.en[key] !== '', 'en dictionary has ' + key)
+    check(typeof DICT.zh[key] === 'string' && DICT.zh[key] !== '', 'zh dictionary has ' + key)
+  }
 }
 // ── the generated file is in sync with its parts ─────────────────────────────
 const build = spawnSync(process.execPath, ['scripts/build-client.mjs', '--check'], { encoding: 'utf8' })

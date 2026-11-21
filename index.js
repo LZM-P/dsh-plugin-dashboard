@@ -25,6 +25,9 @@
  *   POST /api/dsh-plugin-rack/bundle      { name, enabled }  compose or drop a bundle layer
  *   POST /api/dsh-plugin-rack/bulk        { enabled, scope?, save?, cancel? }
  *   POST /api/dsh-plugin-rack/roster      { mode: 'group', scope, auto }
+ *   GET  /api/dsh-plugin-rack/skills      every skill root, scanned, with its on/off state
+ *   POST /api/dsh-plugin-rack/skills/toggle  { name, enabled }  switch one skill on or off
+ *   POST /api/dsh-plugin-rack/skills/note    { name, note }     annotate one skill
  *   GET  /api/dsh-plugin-rack/summary     read-only rows for scripts and future agent tools
  *   GET  /api/dsh-plugin-rack/job         the install running now, or the last one that finished
  *   POST /api/dsh-plugin-rack/job         { action: 'cancel' }  stop the run that is executing now
@@ -58,7 +61,7 @@ import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync,
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
@@ -66,6 +69,15 @@ import { connect as netConnect } from 'node:net'
 import { connect as tlsConnect } from 'node:tls'
 import { createRequire } from 'node:module'
 import { EXACT_VERSION, compareVersions, isVersionSpec, parseSpec, satisfiesSpec } from './lib/spec.js'
+import {
+  applySkillState,
+  createSkillPolicyProvider,
+  readSkillState,
+  resolveWinners,
+  scanSkills,
+  skillRoots,
+  writeSkillState,
+} from './lib/skills.js'
 
 const ROUTE_PREFIX = '/api/dsh-plugin-rack'
 const require = createRequire(import.meta.url)
@@ -98,6 +110,10 @@ const ROUTES = {
   '/plugin': ['POST'],
   '/bulk': ['POST'],
   '/roster': ['POST'],
+  // 技能：本插件自己扫、自己存开关，不经过别的插件。
+  '/skills': ['GET'],
+  '/skills/toggle': ['POST'],
+  '/skills/note': ['POST'],
   // 只读摘要，给脚本和未来的 agent tool 用。写操作刻意不暴露在这里——
   // 让一个语言模型替人点「确认卸载」不是个好主意，那种通道要单独的权限设计。
   '/summary': ['GET'],
@@ -192,6 +208,115 @@ function adoptProfile(ctx) {
 
 function stateFile() {
   return join(stateDir(), 'state.json')
+}
+
+/**
+ * One scan of every skill root, already resolved against the rack's own on/off
+ * list, so the panel renders straight from it.
+ *
+ * @param {object} ctx
+ * @returns {{ ok: true, roots: Array<object>, skills: Array<object>, summary: object, statePath: string }}
+ */
+function skillSnapshot(ctx) {
+  const state = readSkillState(stateDir())
+  const roots = skillRoots({ projectRoots: projectRootsOf(ctx) })
+  const scanned = scanSkills(roots)
+  const resolved = resolveWinners(scanned.skills)
+  const skills = applySkillState(resolved, state)
+  const byRoot = new Map()
+  for (const root of scanned.roots) byRoot.set(root.key, { ...root, skills: [] })
+  for (const skill of skills) {
+    const bucket = byRoot.get(skill.rootKey)
+    if (bucket !== undefined) bucket.skills.push(skill)
+  }
+  for (const bucket of byRoot.values()) {
+    bucket.skills.sort((a, b) => a.name.localeCompare(b.name))
+  }
+  const list = [...byRoot.values()].filter((root) => root.exists || root.skills.length > 0)
+  return {
+    ok: true,
+    roots: list,
+    skills,
+    summary: {
+      total: skills.length,
+      enabled: skills.filter((skill) => skill.enabled === true).length,
+      disabled: skills.filter((skill) => skill.enabled !== true && skill.loadable === true).length,
+      broken: skills.filter((skill) => skill.loadable !== true).length,
+      shadowed: skills.filter((skill) => skill.shadowedBy !== undefined).length,
+    },
+    statePath: join(stateDir(), 'skills.json'),
+  }
+}
+
+/**
+ * Working directories whose project skill roots should be scanned. Uses the
+ * registered workspaces when available and degrades to the process cwd.
+ *
+ * @param {object} ctx
+ * @returns {string[]}
+ */
+function projectRootsOf(ctx) {
+  const roots = new Set()
+  try {
+    const registry = typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : undefined
+    const list = registry !== undefined && typeof registry.list === 'function' ? registry.list() : []
+    for (const workspace of Array.isArray(list) ? list : []) {
+      const dir = workspace?.root ?? workspace?.path
+      if (typeof dir === 'string' && dir !== '') roots.add(resolve(dir))
+    }
+  } catch {
+    // A missing registry only costs project-local skills, not the user's ones.
+  }
+  if (roots.size === 0) {
+    try {
+      roots.add(resolve(process.cwd()))
+    } catch {
+      // No cwd at all: user roots still work.
+    }
+  }
+  return [...roots]
+}
+
+/**
+ * Turn one skill on or off in the rack's own state file.
+ *
+ * @param {object} ctx
+ * @param {string} name
+ * @param {boolean} enabled
+ * @returns {{ ok: true, disabled: string[] }}
+ */
+function setSkillEnabled(ctx, name, enabled) {
+  if (typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+    throw new HttpError(400, 'invalid skill name')
+  }
+  const state = readSkillState(stateDir())
+  const next = new Set(state.disabled)
+  if (enabled) next.delete(name)
+  else next.add(name)
+  const disabled = [...next].sort()
+  writeSkillState(stateDir(), { disabled, notes: state.notes })
+  return { ok: true, disabled }
+}
+
+/**
+ * Save the note shown next to one skill. Empty string clears it.
+ *
+ * @param {object} ctx
+ * @param {string} name
+ * @param {string} note
+ * @returns {{ ok: true, notes: Record<string, string> }}
+ */
+function setSkillNote(ctx, name, note) {
+  if (typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+    throw new HttpError(400, 'invalid skill name')
+  }
+  const state = readSkillState(stateDir())
+  const notes = { ...state.notes }
+  const text = typeof note === 'string' ? note.trim().slice(0, 500) : ''
+  if (text === '') delete notes[name]
+  else notes[name] = text
+  writeSkillState(stateDir(), { disabled: state.disabled, notes })
+  return { ok: true, notes }
 }
 
 /** Where the last update run is recorded, so a closed panel can pick it back up. */
@@ -4385,6 +4510,27 @@ async function handle(ctx, req, res) {
   if (method === 'GET' && path === '/state') {
     return send(res, 200, await snapshot(ctx))
   }
+  // 技能：本插件自己扫描、自己存开关。不依赖任何别的插件。
+  if (method === 'GET' && path === '/skills') {
+    return send(res, 200, skillSnapshot(ctx))
+  }
+  if (method === 'POST' && path === '/skills/toggle') {
+    const body = await readJsonBody(req)
+    const name = body !== null && typeof body === 'object' ? body.name : null
+    const enabled = body !== null && typeof body === 'object' ? body.enabled : null
+    if (typeof enabled !== 'boolean') {
+      return send(res, 400, { ok: false, message: 'enabled must be a boolean' })
+    }
+    const result = setSkillEnabled(ctx, name, enabled)
+    return send(res, 200, { ...result, ...skillSnapshot(ctx) })
+  }
+  if (method === 'POST' && path === '/skills/note') {
+    const body = await readJsonBody(req)
+    const name = body !== null && typeof body === 'object' ? body.name : null
+    const note = body !== null && typeof body === 'object' ? body.note : ''
+    const result = setSkillNote(ctx, name, note)
+    return send(res, 200, { ...result, ...skillSnapshot(ctx) })
+  }
   // 上一次/正在跑的更新任务。面板可能在中途被关掉，回来时靠这个续上进度。
   if (method === 'GET' && path === '/job') {
     return send(res, 200, { ok: true, job: jobStatus(), queue: readQueue() })
@@ -4598,6 +4744,18 @@ async function handle(ctx, req, res) {
 
 export function apply(ctx) {
   adoptProfile(ctx)
+  // 把自己的技能开关接进核心的 skills 服务：只对「已停用」的技能投一张
+  // 低优先级的不可调用候选，让核心把它们从模型上下文里滤掉。启用的技能
+  // 一张都不投，照旧由官方 provider 加载——这里解析出错也伤不到正常技能。
+  ctx.effect(() => {
+    const skills = typeof ctx.get === 'function' ? ctx.get('skills') : undefined
+    if (skills === undefined || typeof skills.registerProvider !== 'function') return () => {}
+    const provider = createSkillPolicyProvider({
+      read: () => readSkillState(stateDir()),
+      scan: () => resolveWinners(scanSkills(skillRoots({ projectRoots: projectRootsOf(ctx) })).skills),
+    })
+    return skills.registerProvider(() => provider)
+  }, 'rack skill policy provider')
   ctx.effect(() =>
     ctx.webServer.register({
       kind: 'prefix',

@@ -1,0 +1,184 @@
+// The rack's own skill management, without a DOM and without any other plugin.
+//
+// This exercises the scanner, the frontmatter reader, the winner rule, the
+// on/off policy and the provider handed to the core `skills` service — the whole
+// path that used to be delegated to a third-party plugin.
+//
+// Run: node test/skills.mjs
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  applySkillState,
+  createSkillPolicyProvider,
+  parseSkillDoc,
+  readSkillState,
+  resolveWinners,
+  scanSkills,
+  skillRoots,
+  writeSkillState,
+} from '../lib/skills.js'
+
+let failures = 0
+let checks = 0
+
+/**
+ * @param {boolean} condition
+ * @param {string} label
+ */
+function check(condition, label) {
+  checks += 1
+  if (!condition) {
+    failures += 1
+    console.error('FAIL ' + label)
+  }
+}
+
+/**
+ * @param {unknown} actual
+ * @param {unknown} want
+ * @param {string} label
+ */
+function eq(actual, want, label) {
+  const ok = JSON.stringify(actual) === JSON.stringify(want)
+  if (!ok) {
+    checks += 1
+    failures += 1
+    console.error('FAIL ' + label + ' — got ' + JSON.stringify(actual) + ', want ' + JSON.stringify(want))
+    return
+  }
+  check(true, label)
+}
+
+// ── frontmatter ─────────────────────────────────────────────────────────────
+{
+  const doc = parseSkillDoc('---\nname: demo-skill\ndescription: Does a thing.\n---\nBody text.\n')
+  check(doc.ok === true, 'a well formed SKILL.md parses')
+  eq(doc.name, 'demo-skill', 'the name comes from frontmatter')
+  eq(doc.description, 'Does a thing.', 'the description comes from frontmatter')
+  eq(doc.body.trim(), 'Body text.', 'the body is everything after the frontmatter')
+  eq(doc.invocation, { modelInvocable: true, userInvocable: true }, 'a plain skill is invocable both ways')
+
+  const off = parseSkillDoc('---\nname: quiet\ndescription: Quiet.\ndisable-model-invocation: true\n---\n')
+  eq(off.invocation, { modelInvocable: false, userInvocable: true }, 'disable-model-invocation is honoured')
+
+  const manual = parseSkillDoc('---\nname: manual\ndescription: Manual.\nuser-invocable: false\n---\n')
+  eq(manual.invocation, { modelInvocable: true, userInvocable: false }, 'user-invocable: false is honoured')
+
+  const quoted = parseSkillDoc('---\nname: "quoted"\ndescription: \'Single quoted.\'\n---\n')
+  eq(quoted.name, 'quoted', 'a quoted name is unquoted')
+  eq(quoted.description, 'Single quoted.', 'a quoted description is unquoted')
+
+  const when = parseSkillDoc('---\nname: when\ndescription: d\nwhenToUse: on tuesdays\n---\n')
+  eq(when.whenToUse, 'on tuesdays', 'whenToUse survives')
+
+  check(parseSkillDoc('no frontmatter here').ok === false, 'missing frontmatter is a problem, not a guess')
+  check(parseSkillDoc('---\nname: only\n---\n').ok === false, 'a missing description is rejected')
+  check(parseSkillDoc('---\nname: Bad Name\ndescription: d\n---\n').ok === false, 'a non kebab-case name is rejected')
+  check(parseSkillDoc('---\nname: open\ndescription: d\n').ok === false, 'unterminated frontmatter is rejected')
+  check(parseSkillDoc('\uFEFF---\nname: bom\ndescription: d\n---\n').ok === true, 'a byte order mark does not break parsing')
+}
+
+// ── scanning and the winner rule ────────────────────────────────────────────
+const workspace = mkdtempSync(join(tmpdir(), 'rack-skills-'))
+try {
+  const userRoot = join(workspace, 'dsh', 'skills')
+  const sharedRoot = join(workspace, 'agents', 'skills')
+  const projectRoot = join(workspace, 'project')
+  const writeSkill = (dir, name, description, extra = '') => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n${extra}---\nBody.\n`, 'utf8')
+  }
+  writeSkill(join(userRoot, 'alpha'), 'alpha', 'User alpha.')
+  writeSkill(join(userRoot, 'beta'), 'beta', 'User beta.')
+  writeSkill(join(sharedRoot, 'alpha'), 'alpha', 'Shared alpha.')
+  writeSkill(join(sharedRoot, 'gamma'), 'gamma', 'Shared gamma.')
+  writeSkill(join(projectRoot, '.dsh', 'skills', 'beta'), 'beta', 'Project beta.')
+  // A folder with a broken SKILL.md, and a folder with none at all.
+  mkdirSync(join(userRoot, 'broken'), { recursive: true })
+  writeFileSync(join(userRoot, 'broken', 'SKILL.md'), 'not a skill file\n', 'utf8')
+  mkdirSync(join(userRoot, 'not-a-skill'), { recursive: true })
+
+  const roots = skillRoots({ dshHome: join(workspace, 'dsh'), agentsHome: join(workspace, 'agents'), projectRoots: [projectRoot] })
+  eq(roots.map((root) => root.key), ['project:' + projectRoot, 'project-agents:' + projectRoot, 'user', 'agents'], 'roots are listed in precedence order')
+
+  const scanned = scanSkills(roots)
+  eq(scanned.skills.filter((skill) => skill.loadable === true).length, 5, 'every readable skill is found')
+  eq(scanned.skills.filter((skill) => skill.loadable !== true).length, 1, 'a broken SKILL.md is reported, not silently dropped')
+  eq(
+    scanned.roots.filter((root) => root.exists === true).map((root) => root.key),
+    ['project:' + projectRoot, 'user', 'agents'],
+    'only the roots that actually exist are reported present',
+  )
+  eq(
+    scanned.roots.filter((root) => root.exists === false).map((root) => root.key),
+    ['project-agents:' + projectRoot],
+    'a root with no skills directory is reported missing rather than invented',
+  )
+
+  const missing = scanSkills(skillRoots({ dshHome: join(workspace, 'nope'), agentsHome: join(workspace, 'nope2'), projectRoots: [] }))
+  check(missing.roots.every((root) => root.exists === false), 'a missing root is reported, and does not throw')
+  eq(missing.skills.length, 0, 'a missing root contributes no skills')
+
+  const resolved = resolveWinners(scanned.skills)
+  const winnerOf = (name) => resolved.filter((skill) => skill.name === name && skill.loadable === true)
+  eq(winnerOf('alpha').filter((skill) => skill.winner === true).map((skill) => skill.rootKey), ['user'], 'the user root outranks the shared root for the same name')
+  const sharedAlpha = winnerOf('alpha').find((skill) => skill.rootKey === 'agents')
+  check(sharedAlpha.shadowedBy !== undefined, 'the losing copy is marked as shadowed')
+  eq(sharedAlpha.shadowedBy.rootKey, 'user', 'the shadowed copy names who beat it')
+  eq(winnerOf('beta').filter((skill) => skill.winner === true).map((skill) => skill.rootKey), ['project:' + projectRoot], 'a project root outranks the user root')
+  eq(winnerOf('gamma').filter((skill) => skill.winner === true).length, 1, 'a unique name has exactly one winner')
+
+  // ── the on/off policy ────────────────────────────────────────────────────
+  writeSkillState(workspace, { disabled: ['alpha'], notes: { beta: 'kept for later' } })
+  const state = readSkillState(workspace)
+  eq(state.disabled, ['alpha'], 'the off list round-trips')
+  eq(state.notes, { beta: 'kept for later' }, 'notes round-trip')
+
+  const applied = applySkillState(resolved, state)
+  const userAlpha = applied.find((skill) => skill.name === 'alpha' && skill.rootKey === 'user')
+  eq(userAlpha.enabled, false, 'a switched-off skill reports itself as off')
+  eq(userAlpha.effectiveModelInvocable, false, 'a switched-off skill cannot be invoked by the model')
+  eq(userAlpha.effectiveUserInvocable, false, 'a switched-off skill cannot be invoked by the user')
+  eq(userAlpha.winner, true, 'switching a skill off does not promote a shadowed copy')
+  eq(applied.find((skill) => skill.name === 'beta' && skill.rootKey === 'user').customNote, 'kept for later', 'a note is attached to its skill')
+  eq(applied.find((skill) => skill.name === 'gamma').enabled, true, 'an untouched skill stays on')
+
+  const brokenEntry = applied.find((skill) => skill.loadable !== true)
+  eq(brokenEntry.enabled, false, 'an unloadable skill is never reported as on')
+
+  // ── the provider handed to the core ──────────────────────────────────────
+  const provider = createSkillPolicyProvider({
+    read: () => readSkillState(workspace),
+    scan: () => resolveWinners(scanSkills(roots).skills),
+  })
+  check(provider.name === 'rack-skill-policy', 'the provider has its own name')
+  const listed = await provider.list()
+  eq(listed.complete, true, 'the provider reports a complete observation')
+  eq(listed.candidates.map((candidate) => candidate.name), ['alpha'], 'the provider only answers for switched-off skills')
+  const candidate = listed.candidates[0]
+  eq(candidate.invocation, { modelInvocable: false, userInvocable: false }, 'the off candidate is not invocable')
+  check(candidate.rank < 400, 'the policy candidate outranks the user root so it wins the merge')
+  eq(candidate.provider, 'rack-skill-policy', 'the candidate names its own provider')
+  eq(provider.get({}, {}), undefined, 'the provider never supplies a body')
+  check(typeof provider.list === 'function' && typeof provider.get === 'function', 'the provider matches the core contract shape')
+
+  const emptyProvider = createSkillPolicyProvider({
+    read: () => ({ disabled: [], notes: {} }),
+    scan: () => [],
+  })
+  eq((await emptyProvider.list()).candidates, [], 'nothing switched off means no candidates at all')
+
+  // A switched-off skill that does not exist any more must not be invented.
+  writeSkillState(workspace, { disabled: ['ghost'], notes: {} })
+  const ghost = await provider.list()
+  eq(ghost.candidates, [], 'an off entry for a missing skill contributes nothing')
+} finally {
+  rmSync(workspace, { recursive: true, force: true })
+}
+
+if (failures > 0) {
+  console.error('SKILLS_FAIL ' + failures + '/' + checks)
+  process.exit(1)
+}
+console.log('SKILLS_OK ' + checks)
